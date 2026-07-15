@@ -1,0 +1,106 @@
+# -*- coding: utf-8 -*-
+"""高低模配对插件自动化测试(在 Blender 无头模式下运行)
+
+用法:
+    blender --background --factory-startup --python tests/run_tests.py
+
+退出码 0 表示全部通过,1 表示有失败。
+"""
+
+import os
+import sys
+import unittest
+
+import bpy
+
+# 必须在导入被测包之前把插件父目录加入 sys.path
+_PROJECT_PARENT = os.path.dirname(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _PROJECT_PARENT not in sys.path:
+    sys.path.insert(0, _PROJECT_PARENT)
+
+from Blender_AutoMatch import find_pairs, ALGORITHM_SIMPLE
+
+
+# ========== 场景与工具函数 ==========
+def clean_scene():
+    """清空场景中的所有物体"""
+    for obj in list(bpy.data.objects):
+        bpy.data.objects.remove(obj, do_unlink=True)
+
+
+def make_mesh(name, location, subdivisions=0, size=2.0):
+    """创建一个网格物体
+
+    Args:
+        name: 物体名称
+        location: 创建位置
+        subdivisions: 细分级数(0=6面立方体; >0 生成高面数UV球)
+        size: 物体尺寸(包围盒跨度)
+    """
+    if subdivisions > 0:
+        bpy.ops.mesh.primitive_uv_sphere_add(
+            radius=size / 2, location=location,
+            segments=4 * (subdivisions + 1), ring_count=2 * (subdivisions + 1))
+    else:
+        bpy.ops.mesh.primitive_cube_add(size=size, location=location)
+    obj = bpy.context.active_object
+    obj.name = name
+    bpy.context.view_layer.update()
+    return obj
+
+
+# ========== 测试用例 ==========
+class TestBFindingPairs(unittest.TestCase):
+    """配对算法核心逻辑"""
+
+    def setUp(self):
+        clean_scene()
+
+    def test_simple_pairs_high_with_low(self):
+        high = make_mesh("High", (0, 0, 0), subdivisions=3)
+        low = make_mesh("Low", (0, 0, 0))
+        pairs = find_pairs(ALGORITHM_SIMPLE, [high, low], max_distance=5.0)
+        self.assertEqual(len(pairs), 1)
+        self.assertIs(pairs[0][0], high)
+        self.assertIs(pairs[0][1], low)
+
+    def test_simple_respects_max_distance(self):
+        high = make_mesh("High", (0, 0, 0), subdivisions=3)
+        low = make_mesh("Low", (100, 0, 0))
+        pairs = find_pairs(ALGORITHM_SIMPLE, [high, low], max_distance=5.0)
+        self.assertEqual(pairs, [])
+
+    def test_fewer_than_two_objects(self):
+        a = make_mesh("A", (0, 0, 0))
+        self.assertEqual(find_pairs(ALGORITHM_SIMPLE, [a], max_distance=5.0), [])
+
+
+# ========== 入口 ==========
+def build_suite():
+    """按声明顺序构建测试套件"""
+    suite = unittest.TestSuite()
+    loader = unittest.TestLoader()
+    suite.addTests(loader.loadTestsFromTestCase(TestBFindingPairs))
+    return suite
+
+
+def main():
+    import addon_utils
+    try:
+        addon_utils.enable("Blender_AutoMatch", default_set=False)
+    except Exception as exc:
+        print(f"addon_utils.enable failed: {exc}")
+
+    if not hasattr(bpy.types, 'OBJECT_OT_pair_rename'):
+        import Blender_AutoMatch
+        Blender_AutoMatch.register()
+
+    result = unittest.TextTestRunner(verbosity=2).run(build_suite())
+    print(f"\nRan {result.testsRun} tests: "
+          f"{len(result.failures)} failures, {len(result.errors)} errors")
+    sys.exit(0 if result.wasSuccessful() else 1)
+
+
+if __name__ == "__main__":
+    main()
