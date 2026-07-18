@@ -7,7 +7,7 @@
     - 基于距离和面数的简单配对算法
     - 批量重命名(格式:BakePoly_001_High/Low)
 
-版本:0.3.0
+版本:0.4.0
 兼容性:Blender 3.4+
 作者:StarAsh042
 许可证:MIT License
@@ -16,7 +16,7 @@
 bl_info = {
     "name": "高低模匹配",
     "author": "StarAsh042",
-    "version": (0, 3, 0),
+    "version": (0, 4, 0),
     "blender": (3, 4, 0),
     "location": "3D视图 > 侧边栏 > 高低模匹配",
     "description": "智能配对并重命名高低模,支持多种算法和自动原点校正",
@@ -47,6 +47,20 @@ LOW_POLY_SUFFIX = "Low"
 
 # ========== 算法枚举 ==========
 ALGORITHM_SIMPLE = "SIMPLE"
+ALGORITHM_CLUSTER = "CLUSTER"
+ALGORITHM_VOLUME = "VOLUME"
+
+ALGORITHM_DISPLAY_NAMES = {
+    ALGORITHM_SIMPLE: "简单算法",
+    ALGORITHM_CLUSTER: "聚类算法",
+    ALGORITHM_VOLUME: "体积算法"
+}
+
+ALGORITHM_DESCRIPTIONS = {
+    ALGORITHM_SIMPLE: "基于距离和面数的简单算法",
+    ALGORITHM_CLUSTER: "先聚类再配对的算法",
+    ALGORITHM_VOLUME: "考虑体积相似度的算法"
+}
 
 # ========== 错误消息 ==========
 ERROR_MESSAGES = {
@@ -54,6 +68,79 @@ ERROR_MESSAGES = {
     "insufficient_objects": "需要至少选中2个网格物体",
     "no_pairs_found": "没有找到合适的配对。请尝试调整参数或更换算法。",
 }
+
+
+# ========== 插件设置 ==========
+class PairRenameSettings(bpy.types.PropertyGroup):
+    """
+    插件设置 - 存储插件的所有配置参数
+
+    分类:
+        - 算法设置: 配对算法选择和参数
+        - 通用参数: 通用配置选项
+        - 命名设置: 命名相关参数
+        - 状态信息: 显示操作状态
+    """
+
+    # ===== 算法选择 =====
+    pair_algorithm: bpy.props.EnumProperty(
+        name="配对算法",
+        description="选择配对算法",
+        items=[
+            (ALGORITHM_SIMPLE,
+             ALGORITHM_DISPLAY_NAMES[ALGORITHM_SIMPLE],
+             ALGORITHM_DESCRIPTIONS[ALGORITHM_SIMPLE]),
+            (ALGORITHM_CLUSTER,
+             ALGORITHM_DISPLAY_NAMES[ALGORITHM_CLUSTER],
+             ALGORITHM_DESCRIPTIONS[ALGORITHM_CLUSTER]),
+            (ALGORITHM_VOLUME,
+             ALGORITHM_DISPLAY_NAMES[ALGORITHM_VOLUME],
+             ALGORITHM_DESCRIPTIONS[ALGORITHM_VOLUME]),
+        ],
+        default=ALGORITHM_SIMPLE
+    )
+
+    # ===== 通用参数 =====
+    pair_max_distance: bpy.props.FloatProperty(
+        name="最大距离",
+        description="配对的最大距离限制(世界坐标单位)",
+        default=DEFAULT_MAX_DISTANCE,
+        min=0.1,
+        max=100.0,
+        step=0.5,
+        subtype='DISTANCE'
+    )
+
+    pair_min_ratio: bpy.props.FloatProperty(
+        name="最小比例",
+        description="高模与低模的最小面数比例(0表示不限制)",
+        default=DEFAULT_MIN_RATIO,
+        min=0.0,
+        max=100.0,
+        step=0.1
+    )
+
+    # ===== 命名设置 =====
+    pair_prefix: bpy.props.StringProperty(
+        name="前缀",
+        description="命名的前缀部分,例如 'BakePoly_'",
+        default=DEFAULT_PAIRING_PREFIX
+    )
+
+    pair_digits: bpy.props.IntProperty(
+        name="数字位数",
+        description="序号数字的位数,例如3表示 '001'",
+        default=DEFAULT_PREFIX_DIGITS,
+        min=1,
+        max=6
+    )
+
+    # ===== 状态信息 =====
+    last_operation: bpy.props.StringProperty(
+        name="最后操作",
+        description="最后一次操作的状态信息",
+        default=""
+    )
 
 
 # ========== 基础几何函数 ==========
@@ -347,9 +434,15 @@ class VIEW3D_PT_PairRename(bpy.types.Panel):
     bl_context = "objectmode"
 
     def draw(self, context: bpy.types.Context) -> None:
-        """绘制主面板UI(仅显示标题)"""
+        """绘制主面板UI(仅显示状态信息)"""
         layout = self.layout
-        layout.label(text="高低模匹配 v0.3.0")
+        settings = context.scene.pair_rename_tool
+
+        # 显示最后操作状态(如果有)
+        if settings.last_operation:
+            row = layout.row()
+            row.alignment = 'LEFT'
+            row.label(text=settings.last_operation, icon='INFO')
 
 
 class VIEW3D_PT_MainActionPanel(bpy.types.Panel):
@@ -408,21 +501,32 @@ class OBJECT_OT_PairRename(bpy.types.Operator):
             {'FINISHED'} 或 {'CANCELLED'}
         """
         start_time = time.time()
+        scene = context.scene
+        settings = scene.pair_rename_tool
+
+        # 验证选中物体
         selected_objects = context.selected_objects
 
         # 基础验证:是否有选中物体
         if not selected_objects:
+            settings.last_operation = "未选中任何物体"
             self.report({'WARNING'}, "请先选中要处理的物体")
             return {'CANCELLED'}
 
         # 验证:是否为网格物体
         mesh_objects = filter_mesh_objects(selected_objects)
         if not mesh_objects:
-            self.report({'WARNING'}, ERROR_MESSAGES["no_mesh_objects"])
+            non_mesh_count = len(selected_objects) - len(mesh_objects)
+            settings.last_operation = f"选中的{len(selected_objects)}个物体中没有网格类型"
+            self.report(
+                {'WARNING'},
+                f"{ERROR_MESSAGES['no_mesh_objects']} (选中了{non_mesh_count}个非网格物体)"
+            )
             return {'CANCELLED'}
 
         # 验证:网格物体数量是否足够
         if len(mesh_objects) < 2:
+            settings.last_operation = f"仅选中{len(mesh_objects)}个网格物体，需要至少2个"
             self.report(
                 {'WARNING'},
                 ERROR_MESSAGES["insufficient_objects"] + f" (当前: {len(mesh_objects)}个)"
@@ -432,6 +536,7 @@ class OBJECT_OT_PairRename(bpy.types.Operator):
         # 过滤有面的物体并验证
         mesh_objects = filter_mesh_objects_with_faces(mesh_objects)
         if len(mesh_objects) < 2:
+            settings.last_operation = f"有效网格物体不足(有{len(mesh_objects)}个有面的物体)"
             self.report(
                 {'WARNING'},
                 f"需要至少2个有面的网格物体 (当前有效: {len(mesh_objects)}个)"
@@ -441,29 +546,40 @@ class OBJECT_OT_PairRename(bpy.types.Operator):
         # 执行配对算法
         try:
             pairs = find_pairs(
-                algorithm=ALGORITHM_SIMPLE,
+                algorithm=settings.pair_algorithm,
                 objects=mesh_objects,
-                max_distance=DEFAULT_MAX_DISTANCE,
-                min_ratio=DEFAULT_MIN_RATIO,
+                max_distance=settings.pair_max_distance,
+                min_ratio=settings.pair_min_ratio,
             )
         except ValueError as e:
             # 参数验证错误
+            settings.last_operation = f"参数错误: {str(e)}"
             self.report({'ERROR'}, f"参数验证失败: {str(e)}")
             return {'CANCELLED'}
         except RuntimeError as e:
             # 算法执行错误
+            settings.last_operation = f"算法执行失败: {str(e)}"
             self.report({'ERROR'}, f"配对算法执行失败: {str(e)}")
+            return {'CANCELLED'}
+        except Exception as e:
+            # 未知错误
+            settings.last_operation = f"未知错误: {str(e)}"
+            self.report({'ERROR'}, f"发生未知错误: {str(e)}")
+            import traceback
+            traceback.print_exc()
             return {'CANCELLED'}
 
         if not pairs:
+            settings.last_operation = "未找到任何配对"
             self.report({'WARNING'}, ERROR_MESSAGES["no_pairs_found"])
             return {'CANCELLED'}
 
         # 从Baking集合的最大序号开始生成前缀
-        max_number = get_max_number_in_baking_collection()
+        max_number = get_max_number_in_baking_collection(
+            settings.pair_prefix, settings.pair_digits)
         prefixes = generate_prefixes(
-            DEFAULT_PAIRING_PREFIX,
-            DEFAULT_PREFIX_DIGITS,
+            settings.pair_prefix,
+            settings.pair_digits,
             max_number + 1,
             len(pairs)
         )
@@ -476,6 +592,10 @@ class OBJECT_OT_PairRename(bpy.types.Operator):
             {'INFO'},
             f"成功配对 {len(pairs)} 对,重命名 {renamed_count} 个物体,"
             f"耗时 {processing_time:.2f}秒"
+        )
+        settings.last_operation = (
+            f"成功配对 {len(pairs)} 对 ({renamed_count}个物体), "
+            f"耗时 {processing_time:.2f}s"
         )
         return {'FINISHED'}
 
@@ -508,6 +628,9 @@ class OBJECT_OT_PairRename(bpy.types.Operator):
 
 # 所有需要注册的类列表(按依赖顺序)
 classes = [
+    # PropertyGroup 类(无依赖,先注册)
+    PairRenameSettings,
+
     # 主面板(必须在子面板之前注册)
     VIEW3D_PT_PairRename,
 
@@ -531,13 +654,18 @@ def register() -> None:
     """注册插件"""
     for cls in classes:
         bpy.utils.register_class(cls)
+    bpy.types.Scene.pair_rename_tool = bpy.props.PointerProperty(
+        type=PairRenameSettings
+    )
     bpy.types.VIEW3D_MT_object.append(menu_func)
-    print("✓ 高低模匹配插件注册成功 v0.3.0")
+    print("✓ 高低模匹配插件注册成功 v0.4.0")
 
 
 def unregister() -> None:
     """注销插件"""
     bpy.types.VIEW3D_MT_object.remove(menu_func)
+    if hasattr(bpy.types.Scene, 'pair_rename_tool'):
+        del bpy.types.Scene.pair_rename_tool
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
     print("✓ 高低模匹配插件注销完成")

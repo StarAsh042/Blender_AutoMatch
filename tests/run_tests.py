@@ -51,6 +51,13 @@ def make_mesh(name, location, subdivisions=0, size=2.0):
 
 
 # ========== 测试用例 ==========
+class TestARegistration(unittest.TestCase):
+    """插件注册状态"""
+
+    def test_scene_property_registered(self):
+        self.assertTrue(hasattr(bpy.types.Scene, 'pair_rename_tool'))
+
+
 class TestBFindingPairs(unittest.TestCase):
     """配对算法核心逻辑"""
 
@@ -81,6 +88,7 @@ def build_suite():
     """按声明顺序构建测试套件"""
     suite = unittest.TestSuite()
     loader = unittest.TestLoader()
+    suite.addTests(loader.loadTestsFromTestCase(TestARegistration))
     suite.addTests(loader.loadTestsFromTestCase(TestBFindingPairs))
     return suite
 
