@@ -57,6 +57,10 @@ class TestARegistration(unittest.TestCase):
     def test_scene_property_registered(self):
         self.assertTrue(hasattr(bpy.types.Scene, 'pair_rename_tool'))
 
+    def test_panels_registered(self):
+        for type_name in ('VIEW3D_PT_pair_rename', 'VIEW3D_PT_main_action_panel'):
+            self.assertTrue(hasattr(bpy.types, type_name), f"missing {type_name}")
+
 
 class TestBFindingPairs(unittest.TestCase):
     """配对算法核心逻辑"""

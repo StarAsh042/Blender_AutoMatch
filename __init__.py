@@ -7,7 +7,7 @@
     - 基于距离和面数的简单配对算法
     - 批量重命名(格式:BakePoly_001_High/Low)
 
-版本:0.4.0
+版本:0.5.0
 兼容性:Blender 3.4+
 作者:StarAsh042
 许可证:MIT License
@@ -16,7 +16,7 @@
 bl_info = {
     "name": "高低模匹配",
     "author": "StarAsh042",
-    "version": (0, 4, 0),
+    "version": (0, 5, 0),
     "blender": (3, 4, 0),
     "location": "3D视图 > 侧边栏 > 高低模匹配",
     "description": "智能配对并重命名高低模,支持多种算法和自动原点校正",
@@ -133,6 +133,19 @@ class PairRenameSettings(bpy.types.PropertyGroup):
         default=DEFAULT_PREFIX_DIGITS,
         min=1,
         max=6
+    )
+
+    # ===== UI折叠状态 =====
+    show_common_params: bpy.props.BoolProperty(
+        name="显示通用参数",
+        description="展开/收起通用参数面板",
+        default=True
+    )
+
+    show_naming_params: bpy.props.BoolProperty(
+        name="显示命名参数",
+        description="展开/收起命名参数面板",
+        default=True
     )
 
     # ===== 状态信息 =====
@@ -480,6 +493,61 @@ class VIEW3D_PT_MainActionPanel(bpy.types.Panel):
                      icon='FILE_REFRESH')
 
 
+class VIEW3D_PT_CommonParamsPanel(bpy.types.Panel):
+    """通用参数子面板"""
+
+    bl_label = "通用参数"
+    bl_idname = "VIEW3D_PT_common_params_panel"
+    bl_parent_id = "VIEW3D_PT_pair_rename"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = "高低模匹配"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    def draw(self, context: bpy.types.Context) -> None:
+        """绘制通用参数区域"""
+        layout = self.layout
+        settings = context.scene.pair_rename_tool
+
+        col = layout.column(align=True)
+        col.use_property_split = True
+        col.use_property_decorate = False
+
+        col.prop(settings, "pair_max_distance", text="最大配对距离")
+        col.prop(settings, "pair_min_ratio", text="面数比例阈值")
+
+        # 重置按钮
+        layout.separator(factor=0.5)
+        row = layout.row(align=True)
+        row.operator(OBJECT_OT_ResetPreferences.bl_idname,
+                     text="重置参数",
+                     icon='LOOP_BACK')
+
+
+class VIEW3D_PT_NamingParamsPanel(bpy.types.Panel):
+    """命名设置子面板"""
+
+    bl_label = "命名设置"
+    bl_idname = "VIEW3D_PT_naming_params_panel"
+    bl_parent_id = "VIEW3D_PT_pair_rename"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = "高低模匹配"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    def draw(self, context: bpy.types.Context) -> None:
+        """绘制命名设置区域"""
+        layout = self.layout
+        settings = context.scene.pair_rename_tool
+
+        col = layout.column(align=True)
+        col.use_property_split = True
+        col.use_property_decorate = False
+
+        col.prop(settings, "pair_prefix", text="前缀")
+        col.prop(settings, "pair_digits", text="数字位数")
+
+
 class OBJECT_OT_PairRename(bpy.types.Operator):
     """配对重命名高低模"""
 
@@ -626,6 +694,28 @@ class OBJECT_OT_PairRename(bpy.types.Operator):
         return count
 
 
+class OBJECT_OT_ResetPreferences(bpy.types.Operator):
+    """重置插件参数到默认值"""
+
+    bl_idname = "object.pair_rename_reset"
+    bl_label = "重置参数"
+    bl_options = {'REGISTER'}
+
+    def execute(self, context: bpy.types.Context) -> Set[str]:
+        """重置参数到默认值"""
+        settings = context.scene.pair_rename_tool
+
+        settings.pair_algorithm = ALGORITHM_SIMPLE
+        settings.pair_max_distance = DEFAULT_MAX_DISTANCE
+        settings.pair_min_ratio = DEFAULT_MIN_RATIO
+        settings.pair_prefix = DEFAULT_PAIRING_PREFIX
+        settings.pair_digits = DEFAULT_PREFIX_DIGITS
+
+        settings.last_operation = "参数已重置为默认值"
+        self.report({'INFO'}, "参数已重置为默认值")
+        return {'FINISHED'}
+
+
 # 所有需要注册的类列表(按依赖顺序)
 classes = [
     # PropertyGroup 类(无依赖,先注册)
@@ -634,11 +724,14 @@ classes = [
     # 主面板(必须在子面板之前注册)
     VIEW3D_PT_PairRename,
 
-    # 子面板(依赖主面板)
+    # 子面板(依赖主面板,按显示顺序注册)
     VIEW3D_PT_MainActionPanel,
+    VIEW3D_PT_CommonParamsPanel,
+    VIEW3D_PT_NamingParamsPanel,
 
     # Operators
     OBJECT_OT_PairRename,
+    OBJECT_OT_ResetPreferences,
 ]
 
 
@@ -658,7 +751,7 @@ def register() -> None:
         type=PairRenameSettings
     )
     bpy.types.VIEW3D_MT_object.append(menu_func)
-    print("✓ 高低模匹配插件注册成功 v0.4.0")
+    print("✓ 高低模匹配插件注册成功 v0.5.0")
 
 
 def unregister() -> None:
