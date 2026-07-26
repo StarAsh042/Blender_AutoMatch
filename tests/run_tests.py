@@ -19,7 +19,7 @@ _PROJECT_PARENT = os.path.dirname(
 if _PROJECT_PARENT not in sys.path:
     sys.path.insert(0, _PROJECT_PARENT)
 
-from Blender_AutoMatch import find_pairs, ALGORITHM_SIMPLE
+from Blender_AutoMatch import find_pairs, ALGORITHM_SIMPLE, ALGORITHM_CLUSTER
 
 
 # ========== 场景与工具函数 ==========
@@ -81,6 +81,28 @@ class TestBFindingPairs(unittest.TestCase):
         low = make_mesh("Low", (100, 0, 0))
         pairs = find_pairs(ALGORITHM_SIMPLE, [high, low], max_distance=5.0)
         self.assertEqual(pairs, [])
+
+    def test_cluster_splits_distant_groups(self):
+        high_a = make_mesh("HighA", (-50, 0, 0), subdivisions=3)
+        low_a = make_mesh("LowA", (-49, 0, 0))
+        high_b = make_mesh("HighB", (50, 0, 0), subdivisions=3)
+        low_b = make_mesh("LowB", (51, 0, 0))
+        pairs = find_pairs(
+            ALGORITHM_CLUSTER, [high_a, low_a, high_b, low_b],
+            max_distance=5.0, cluster_radius=2.0)
+        self.assertEqual(len(pairs), 2)
+        members = {frozenset((p[0].name, p[1].name)) for p in pairs}
+        self.assertEqual(members, {frozenset(("HighA", "LowA")), frozenset(("HighB", "LowB"))})
+
+    def test_cluster_radius_prevents_cross_cluster_pair(self):
+        # 距离3的两个物体:简单算法可配对,聚类半径1时被分入不同聚类而无法配对
+        high = make_mesh("High", (0, 0, 0), subdivisions=3)
+        low = make_mesh("Low", (3, 0, 0))
+        self.assertEqual(
+            len(find_pairs(ALGORITHM_SIMPLE, [high, low], max_distance=5.0)), 1)
+        self.assertEqual(
+            find_pairs(ALGORITHM_CLUSTER, [high, low],
+                       max_distance=5.0, cluster_radius=1.0), [])
 
     def test_fewer_than_two_objects(self):
         a = make_mesh("A", (0, 0, 0))

@@ -5,9 +5,10 @@
 
 主要功能:
     - 基于距离和面数的简单配对算法
+    - 基于空间位置聚类的配对算法
     - 批量重命名(格式:BakePoly_001_High/Low)
 
-版本:0.5.0
+版本:0.6.0
 兼容性:Blender 3.4+
 作者:StarAsh042
 许可证:MIT License
@@ -16,7 +17,7 @@
 bl_info = {
     "name": "高低模匹配",
     "author": "StarAsh042",
-    "version": (0, 5, 0),
+    "version": (0, 6, 0),
     "blender": (3, 4, 0),
     "location": "3D视图 > 侧边栏 > 高低模匹配",
     "description": "智能配对并重命名高低模,支持多种算法和自动原点校正",
@@ -29,6 +30,7 @@ import bpy
 from mathutils import Vector
 import re
 import time
+from collections import deque
 from typing import Dict, List, Tuple, Optional, Set
 
 
@@ -37,6 +39,7 @@ DEFAULT_PAIRING_PREFIX = "BakePoly_"
 DEFAULT_PREFIX_DIGITS = 3
 DEFAULT_MAX_DISTANCE = 5.0
 DEFAULT_MIN_RATIO = 0.0
+DEFAULT_CLUSTER_RADIUS = 5.0
 
 # ========== 集合名称 ==========
 BAKING_COLLECTION_NAME = "Baking"
@@ -120,6 +123,17 @@ class PairRenameSettings(bpy.types.PropertyGroup):
         step=0.1
     )
 
+    # ===== 聚类算法参数 =====
+    pair_cluster_radius: bpy.props.FloatProperty(
+        name="聚类半径",
+        description="聚类算法的半径参数(仅聚类算法有效)",
+        default=DEFAULT_CLUSTER_RADIUS,
+        min=0.1,
+        max=50.0,
+        step=0.5,
+        subtype='DISTANCE'
+    )
+
     # ===== 命名设置 =====
     pair_prefix: bpy.props.StringProperty(
         name="前缀",
@@ -139,6 +153,12 @@ class PairRenameSettings(bpy.types.PropertyGroup):
     show_common_params: bpy.props.BoolProperty(
         name="显示通用参数",
         description="展开/收起通用参数面板",
+        default=True
+    )
+
+    show_cluster_params: bpy.props.BoolProperty(
+        name="显示聚类参数",
+        description="展开/收起聚类参数面板",
         default=True
     )
 
@@ -320,7 +340,8 @@ def find_pairs(
     algorithm: str,
     objects: List[bpy.types.Object],
     max_distance: float = 5.0,
-    min_ratio: float = 0.0
+    min_ratio: float = 0.0,
+    cluster_radius: float = 5.0
 ) -> List[Tuple[bpy.types.Object, bpy.types.Object, float]]:
     """根据指定算法查找高低模配对
 
@@ -329,6 +350,7 @@ def find_pairs(
         objects: 要配对的物体列表
         max_distance: 最大配对距离
         min_ratio: 高模与低模的最小面数比例(0表示不限制)
+        cluster_radius: 聚类半径(聚类算法用)
 
     Returns:
         配对列表,每项为 (高模对象, 低模对象, 距离评分)
@@ -353,6 +375,9 @@ def find_pairs(
     if min_ratio < 0:
         raise ValueError(f"min_ratio 不能为负数, 当前值: {min_ratio}")
 
+    if cluster_radius <= 0:
+        raise ValueError(f"cluster_radius 必须为正数, 当前值: {cluster_radius}")
+
     if len(objects) < 2:
         return []
 
@@ -361,6 +386,10 @@ def find_pairs(
         if algorithm == ALGORITHM_SIMPLE:
             return find_pairs_by_distance_and_faces(
                 objects, max_distance, min_ratio
+            )
+        elif algorithm == ALGORITHM_CLUSTER:
+            return find_pairs_by_clustering(
+                objects, max_distance, min_ratio, cluster_radius
             )
         else:
             raise ValueError(f"不支持的算法类型: {algorithm}")
@@ -434,6 +463,92 @@ def find_pairs_by_distance_and_faces(
             used_objects.add(best_match)
 
     return pairs
+
+
+def find_pairs_by_clustering(
+    objects: List[bpy.types.Object],
+    max_distance: float = 5.0,
+    min_ratio: float = 0.0,
+    cluster_radius: float = 5.0
+) -> List[Tuple[bpy.types.Object, bpy.types.Object, float]]:
+    """算法2:聚类配对算法
+
+    先按空间位置聚类,然后在每个聚类内进行配对。
+    适用于物体分布有明显聚类特征的场景(如多个角色)
+
+    Args:
+        objects: 要配对的物体列表
+        max_distance: 最大配对距离阈值
+        min_ratio: 高模与低模的最小面数比例
+        cluster_radius: 聚类半径
+
+    Returns:
+        配对列表,每项为 (高模对象, 低模对象, 距离评分)
+    """
+    if len(objects) < 2:
+        return []
+
+    # 聚类
+    clusters = cluster_objects(objects, cluster_radius)
+
+    # 在每个聚类内进行配对
+    all_pairs = []
+    for cluster in clusters:
+        if len(cluster) >= 2:
+            cluster_pairs = find_pairs_by_distance_and_faces(
+                cluster, max_distance, min_ratio
+            )
+            all_pairs.extend(cluster_pairs)
+
+    return all_pairs
+
+
+def cluster_objects(
+    objects: List[bpy.types.Object],
+    radius: float
+) -> List[List[bpy.types.Object]]:
+    """将物体按空间位置聚类
+
+    Args:
+        objects: 物体列表
+        radius: 聚类半径
+
+    Returns:
+        聚类列表,每个聚类是一个物体列表
+    """
+    if not objects:
+        return []
+
+    clusters = []
+    used_objects = set()
+
+    for obj in objects:
+        if obj in used_objects:
+            continue
+
+        # 创建新聚类
+        cluster = [obj]
+        used_objects.add(obj)
+
+        # 使用BFS寻找邻近物体
+        queue = deque([obj])
+
+        while queue:
+            current = queue.popleft()
+
+            for other in objects:
+                if other in used_objects:
+                    continue
+
+                # 如果在聚类半径内,加入聚类
+                if calculate_distance(current, other) <= radius:
+                    cluster.append(other)
+                    used_objects.add(other)
+                    queue.append(other)
+
+        clusters.append(cluster)
+
+    return clusters
 
 
 class VIEW3D_PT_PairRename(bpy.types.Panel):
@@ -522,6 +637,33 @@ class VIEW3D_PT_CommonParamsPanel(bpy.types.Panel):
         row.operator(OBJECT_OT_ResetPreferences.bl_idname,
                      text="重置参数",
                      icon='LOOP_BACK')
+
+
+class VIEW3D_PT_ClusterParamsPanel(bpy.types.Panel):
+    """聚类算法参数子面板"""
+
+    bl_label = "聚类算法参数"
+    bl_idname = "VIEW3D_PT_cluster_params_panel"
+    bl_parent_id = "VIEW3D_PT_pair_rename"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = "高低模匹配"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    @classmethod
+    def poll(cls, context: bpy.types.Context) -> bool:
+        """仅在聚类算法被选中时显示"""
+        return context.scene.pair_rename_tool.pair_algorithm == ALGORITHM_CLUSTER
+
+    def draw(self, context: bpy.types.Context) -> None:
+        """绘制聚类算法参数区域"""
+        layout = self.layout
+        settings = context.scene.pair_rename_tool
+
+        col = layout.column(align=True)
+        col.use_property_split = True
+        col.use_property_decorate = False
+        col.prop(settings, "pair_cluster_radius", text="聚类半径")
 
 
 class VIEW3D_PT_NamingParamsPanel(bpy.types.Panel):
@@ -618,6 +760,7 @@ class OBJECT_OT_PairRename(bpy.types.Operator):
                 objects=mesh_objects,
                 max_distance=settings.pair_max_distance,
                 min_ratio=settings.pair_min_ratio,
+                cluster_radius=settings.pair_cluster_radius,
             )
         except ValueError as e:
             # 参数验证错误
@@ -708,6 +851,7 @@ class OBJECT_OT_ResetPreferences(bpy.types.Operator):
         settings.pair_algorithm = ALGORITHM_SIMPLE
         settings.pair_max_distance = DEFAULT_MAX_DISTANCE
         settings.pair_min_ratio = DEFAULT_MIN_RATIO
+        settings.pair_cluster_radius = DEFAULT_CLUSTER_RADIUS
         settings.pair_prefix = DEFAULT_PAIRING_PREFIX
         settings.pair_digits = DEFAULT_PREFIX_DIGITS
 
@@ -727,6 +871,7 @@ classes = [
     # 子面板(依赖主面板,按显示顺序注册)
     VIEW3D_PT_MainActionPanel,
     VIEW3D_PT_CommonParamsPanel,
+    VIEW3D_PT_ClusterParamsPanel,
     VIEW3D_PT_NamingParamsPanel,
 
     # Operators
@@ -751,7 +896,7 @@ def register() -> None:
         type=PairRenameSettings
     )
     bpy.types.VIEW3D_MT_object.append(menu_func)
-    print("✓ 高低模匹配插件注册成功 v0.5.0")
+    print("✓ 高低模匹配插件注册成功 v0.6.0")
 
 
 def unregister() -> None:
