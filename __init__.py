@@ -8,7 +8,7 @@
     - 基于空间位置聚类的配对算法
     - 批量重命名(格式:BakePoly_001_High/Low)
 
-版本:0.6.0
+版本:0.7.0
 兼容性:Blender 3.4+
 作者:StarAsh042
 许可证:MIT License
@@ -17,7 +17,7 @@
 bl_info = {
     "name": "高低模匹配",
     "author": "StarAsh042",
-    "version": (0, 6, 0),
+    "version": (0, 7, 0),
     "blender": (3, 4, 0),
     "location": "3D视图 > 侧边栏 > 高低模匹配",
     "description": "智能配对并重命名高低模,支持多种算法和自动原点校正",
@@ -608,6 +608,68 @@ class VIEW3D_PT_MainActionPanel(bpy.types.Panel):
                      icon='FILE_REFRESH')
 
 
+class VIEW3D_PT_AlgorithmPanel(bpy.types.Panel):
+    """算法选择子面板"""
+
+    bl_label = "算法选择"
+    bl_idname = "VIEW3D_PT_algorithm_panel"
+    bl_parent_id = "VIEW3D_PT_pair_rename"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = "高低模匹配"
+
+    def draw(self, context: bpy.types.Context) -> None:
+        """绘制算法选择区域"""
+        layout = self.layout
+        settings = context.scene.pair_rename_tool
+
+        # 预设选择(按钮样式)
+        col = layout.column(align=True)
+        row = col.row(align=True)
+        row.scale_y = 1.5
+
+        # 简单算法按钮
+        is_simple = settings.pair_algorithm == ALGORITHM_SIMPLE
+        row.operator("object.set_pair_algorithm_simple",
+                    text="简单",
+                    depress=is_simple,
+                    icon='RADIOBUT_ON' if is_simple else 'RADIOBUT_OFF')
+
+        # 聚类算法按钮
+        is_cluster = settings.pair_algorithm == ALGORITHM_CLUSTER
+        row.operator("object.set_pair_algorithm_cluster",
+                    text="聚类",
+                    depress=is_cluster,
+                    icon='RADIOBUT_ON' if is_cluster else 'RADIOBUT_OFF')
+
+        # 体积算法按钮
+        row = col.row(align=True)
+        row.scale_y = 1.5
+        is_volume = settings.pair_algorithm == ALGORITHM_VOLUME
+        row.operator("object.set_pair_algorithm_volume",
+                    text="体积",
+                    depress=is_volume,
+                    icon='RADIOBUT_ON' if is_volume else 'RADIOBUT_OFF')
+
+        # 算法说明
+        layout.separator(factor=0.5)
+        col = layout.column(align=True)
+
+        if settings.pair_algorithm == ALGORITHM_SIMPLE:
+            col.label(text="适用:物体分布均匀、数量较少", icon='INFO')
+        elif settings.pair_algorithm == ALGORITHM_CLUSTER:
+            col.label(text="适用:物体有聚类特征(多角色)", icon='INFO')
+        elif settings.pair_algorithm == ALGORITHM_VOLUME:
+            col.label(text="适用:需考虑体积相似度的场景", icon='INFO')
+
+        # 重置按钮
+        layout.separator(factor=0.5)
+        row = layout.row(align=True)
+        row.operator(OBJECT_OT_ResetPreferences.bl_idname,
+                    text="重置算法参数",
+                    icon='LOOP_BACK')
+
+
 class VIEW3D_PT_CommonParamsPanel(bpy.types.Panel):
     """通用参数子面板"""
 
@@ -630,13 +692,6 @@ class VIEW3D_PT_CommonParamsPanel(bpy.types.Panel):
 
         col.prop(settings, "pair_max_distance", text="最大配对距离")
         col.prop(settings, "pair_min_ratio", text="面数比例阈值")
-
-        # 重置按钮
-        layout.separator(factor=0.5)
-        row = layout.row(align=True)
-        row.operator(OBJECT_OT_ResetPreferences.bl_idname,
-                     text="重置参数",
-                     icon='LOOP_BACK')
 
 
 class VIEW3D_PT_ClusterParamsPanel(bpy.types.Panel):
@@ -837,6 +892,49 @@ class OBJECT_OT_PairRename(bpy.types.Operator):
         return count
 
 
+class OBJECT_OT_SetPairAlgorithm(bpy.types.Operator):
+    """设置配对算法基类"""
+
+    bl_idname = "object.set_pair_algorithm"
+    bl_label = "设置配对算法"
+    bl_options = {'REGISTER'}
+
+    algorithm = ''
+
+    def execute(self, context: bpy.types.Context) -> Set[str]:
+        """设置配对算法"""
+        context.scene.pair_rename_tool.pair_algorithm = self.algorithm
+        context.scene.pair_rename_tool.last_operation = f"已切换到 {self.algorithm} 算法"
+        return {'FINISHED'}
+
+
+class OBJECT_OT_SetPairAlgorithmSimple(OBJECT_OT_SetPairAlgorithm):
+    """设置为简单算法"""
+
+    bl_idname = "object.set_pair_algorithm_simple"
+    bl_label = "简单算法"
+
+    algorithm = ALGORITHM_SIMPLE
+
+
+class OBJECT_OT_SetPairAlgorithmCluster(OBJECT_OT_SetPairAlgorithm):
+    """设置为聚类算法"""
+
+    bl_idname = "object.set_pair_algorithm_cluster"
+    bl_label = "聚类算法"
+
+    algorithm = ALGORITHM_CLUSTER
+
+
+class OBJECT_OT_SetPairAlgorithmVolume(OBJECT_OT_SetPairAlgorithm):
+    """设置为体积算法"""
+
+    bl_idname = "object.set_pair_algorithm_volume"
+    bl_label = "体积算法"
+
+    algorithm = ALGORITHM_VOLUME
+
+
 class OBJECT_OT_ResetPreferences(bpy.types.Operator):
     """重置插件参数到默认值"""
 
@@ -870,12 +968,16 @@ classes = [
 
     # 子面板(依赖主面板,按显示顺序注册)
     VIEW3D_PT_MainActionPanel,
+    VIEW3D_PT_AlgorithmPanel,
     VIEW3D_PT_CommonParamsPanel,
     VIEW3D_PT_ClusterParamsPanel,
     VIEW3D_PT_NamingParamsPanel,
 
     # Operators
     OBJECT_OT_PairRename,
+    OBJECT_OT_SetPairAlgorithmSimple,
+    OBJECT_OT_SetPairAlgorithmCluster,
+    OBJECT_OT_SetPairAlgorithmVolume,
     OBJECT_OT_ResetPreferences,
 ]
 
@@ -896,7 +998,7 @@ def register() -> None:
         type=PairRenameSettings
     )
     bpy.types.VIEW3D_MT_object.append(menu_func)
-    print("✓ 高低模匹配插件注册成功 v0.6.0")
+    print("✓ 高低模匹配插件注册成功 v0.7.0")
 
 
 def unregister() -> None:

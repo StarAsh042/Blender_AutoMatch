@@ -57,6 +57,17 @@ class TestARegistration(unittest.TestCase):
     def test_scene_property_registered(self):
         self.assertTrue(hasattr(bpy.types.Scene, 'pair_rename_tool'))
 
+    def test_operators_registered(self):
+        # bpy.types 中操作符按 bl_idname 的 OT 形式注册
+        for type_name in (
+            'OBJECT_OT_pair_rename',
+            'OBJECT_OT_pair_rename_reset',
+            'OBJECT_OT_set_pair_algorithm_simple',
+            'OBJECT_OT_set_pair_algorithm_cluster',
+            'OBJECT_OT_set_pair_algorithm_volume',
+        ):
+            self.assertTrue(hasattr(bpy.types, type_name), f"missing {type_name}")
+
     def test_panels_registered(self):
         for type_name in ('VIEW3D_PT_pair_rename', 'VIEW3D_PT_main_action_panel'):
             self.assertTrue(hasattr(bpy.types, type_name), f"missing {type_name}")
