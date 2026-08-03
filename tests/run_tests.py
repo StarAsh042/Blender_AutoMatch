@@ -19,7 +19,12 @@ _PROJECT_PARENT = os.path.dirname(
 if _PROJECT_PARENT not in sys.path:
     sys.path.insert(0, _PROJECT_PARENT)
 
-from Blender_AutoMatch import find_pairs, ALGORITHM_SIMPLE, ALGORITHM_CLUSTER
+from Blender_AutoMatch import (
+    find_pairs,
+    ALGORITHM_SIMPLE,
+    ALGORITHM_CLUSTER,
+    ALGORITHM_VOLUME,
+)
 
 
 # ========== 场景与工具函数 ==========
@@ -29,7 +34,7 @@ def clean_scene():
         bpy.data.objects.remove(obj, do_unlink=True)
 
 
-def make_mesh(name, location, subdivisions=0, size=2.0):
+def make_mesh(name, location, subdivisions=0, size=2.0, scale=None):
     """创建一个网格物体
 
     Args:
@@ -37,6 +42,7 @@ def make_mesh(name, location, subdivisions=0, size=2.0):
         location: 创建位置
         subdivisions: 细分级数(0=6面立方体; >0 生成高面数UV球)
         size: 物体尺寸(包围盒跨度)
+        scale: 物体缩放(影响包围盒体积)
     """
     if subdivisions > 0:
         bpy.ops.mesh.primitive_uv_sphere_add(
@@ -46,6 +52,9 @@ def make_mesh(name, location, subdivisions=0, size=2.0):
         bpy.ops.mesh.primitive_cube_add(size=size, location=location)
     obj = bpy.context.active_object
     obj.name = name
+    if scale is not None:
+        obj.scale = scale
+    # 刷新求值,确保 matrix_world / bound_box 反映缩放
     bpy.context.view_layer.update()
     return obj
 
@@ -114,6 +123,16 @@ class TestBFindingPairs(unittest.TestCase):
         self.assertEqual(
             find_pairs(ALGORITHM_CLUSTER, [high, low],
                        max_distance=5.0, cluster_radius=1.0), [])
+
+    def test_volume_respects_ratio_range(self):
+        high = make_mesh("High", (0, 0, 0), subdivisions=3)
+        low = make_mesh("Low", (0, 0, 0), scale=(3, 3, 3))  # 包围盒体积放大27倍
+        self.assertEqual(
+            find_pairs(ALGORITHM_VOLUME, [high, low], max_distance=5.0,
+                       volume_ratio_range=(0.5, 2.0)), [])
+        pairs = find_pairs(ALGORITHM_VOLUME, [high, low], max_distance=5.0,
+                           volume_ratio_range=(0.01, 0.1))
+        self.assertEqual(len(pairs), 1)
 
     def test_fewer_than_two_objects(self):
         a = make_mesh("A", (0, 0, 0))

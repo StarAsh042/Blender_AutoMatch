@@ -4,11 +4,11 @@
 本插件用于自动配对并重命名高低模物体,支持多种配对算法和灵活的命名配置。
 
 主要功能:
-    - 基于距离和面数的简单配对算法
-    - 基于空间位置聚类的配对算法
+    - 三种智能配对算法(简单/聚类/体积)
+    - 自动识别高低模(基于面数)
     - 批量重命名(格式:BakePoly_001_High/Low)
 
-版本:0.7.0
+版本:0.8.0
 兼容性:Blender 3.4+
 作者:StarAsh042
 许可证:MIT License
@@ -17,7 +17,7 @@
 bl_info = {
     "name": "高低模匹配",
     "author": "StarAsh042",
-    "version": (0, 7, 0),
+    "version": (0, 8, 0),
     "blender": (3, 4, 0),
     "location": "3D视图 > 侧边栏 > 高低模匹配",
     "description": "智能配对并重命名高低模,支持多种算法和自动原点校正",
@@ -40,6 +40,8 @@ DEFAULT_PREFIX_DIGITS = 3
 DEFAULT_MAX_DISTANCE = 5.0
 DEFAULT_MIN_RATIO = 0.0
 DEFAULT_CLUSTER_RADIUS = 5.0
+DEFAULT_VOLUME_MIN_RATIO = 0.5
+DEFAULT_VOLUME_MAX_RATIO = 2.0
 
 # ========== 集合名称 ==========
 BAKING_COLLECTION_NAME = "Baking"
@@ -64,6 +66,9 @@ ALGORITHM_DESCRIPTIONS = {
     ALGORITHM_CLUSTER: "先聚类再配对的算法",
     ALGORITHM_VOLUME: "考虑体积相似度的算法"
 }
+
+# ========== 体积评分权重 ==========
+VOLUME_SCORE_WEIGHT = 5.0
 
 # ========== 错误消息 ==========
 ERROR_MESSAGES = {
@@ -134,6 +139,25 @@ class PairRenameSettings(bpy.types.PropertyGroup):
         subtype='DISTANCE'
     )
 
+    # ===== 体积算法参数 =====
+    pair_volume_min_ratio: bpy.props.FloatProperty(
+        name="最小体积比",
+        description="体积算法的最小体积比例(仅体积算法有效)",
+        default=DEFAULT_VOLUME_MIN_RATIO,
+        min=0.1,
+        max=5.0,
+        step=0.1
+    )
+
+    pair_volume_max_ratio: bpy.props.FloatProperty(
+        name="最大体积比",
+        description="体积算法的最大体积比例(仅体积算法有效)",
+        default=DEFAULT_VOLUME_MAX_RATIO,
+        min=0.5,
+        max=10.0,
+        step=0.1
+    )
+
     # ===== 命名设置 =====
     pair_prefix: bpy.props.StringProperty(
         name="前缀",
@@ -159,6 +183,12 @@ class PairRenameSettings(bpy.types.PropertyGroup):
     show_cluster_params: bpy.props.BoolProperty(
         name="显示聚类参数",
         description="展开/收起聚类参数面板",
+        default=True
+    )
+
+    show_volume_params: bpy.props.BoolProperty(
+        name="显示体积参数",
+        description="展开/收起体积参数面板",
         default=True
     )
 
@@ -233,6 +263,12 @@ def get_bbox_size(obj: bpy.types.Object) -> Vector:
 
     min_co, max_co = get_world_bbox(obj)
     return max_co - min_co
+
+
+def calculate_bbox_volume(obj: bpy.types.Object) -> float:
+    """计算包围盒体积"""
+    size = get_bbox_size(obj)
+    return size.x * size.y * size.z
 
 
 def calculate_distance(
@@ -341,7 +377,8 @@ def find_pairs(
     objects: List[bpy.types.Object],
     max_distance: float = 5.0,
     min_ratio: float = 0.0,
-    cluster_radius: float = 5.0
+    cluster_radius: float = 5.0,
+    volume_ratio_range: Tuple[float, float] = (0.5, 2.0)
 ) -> List[Tuple[bpy.types.Object, bpy.types.Object, float]]:
     """根据指定算法查找高低模配对
 
@@ -351,6 +388,7 @@ def find_pairs(
         max_distance: 最大配对距离
         min_ratio: 高模与低模的最小面数比例(0表示不限制)
         cluster_radius: 聚类半径(聚类算法用)
+        volume_ratio_range: 体积比例范围(体积算法用)
 
     Returns:
         配对列表,每项为 (高模对象, 低模对象, 距离评分)
@@ -378,6 +416,15 @@ def find_pairs(
     if cluster_radius <= 0:
         raise ValueError(f"cluster_radius 必须为正数, 当前值: {cluster_radius}")
 
+    if not isinstance(volume_ratio_range, (tuple, list)) or len(volume_ratio_range) != 2:
+        raise ValueError("volume_ratio_range 必须是包含两个元素的元组或列表")
+
+    min_vol, max_vol = volume_ratio_range
+    if min_vol <= 0 or max_vol <= 0:
+        raise ValueError("volume_ratio_range 的值必须为正数")
+    if min_vol > max_vol:
+        raise ValueError(f"volume_ratio_range 的最小值不能大于最大值: {min_vol} > {max_vol}")
+
     if len(objects) < 2:
         return []
 
@@ -390,6 +437,10 @@ def find_pairs(
         elif algorithm == ALGORITHM_CLUSTER:
             return find_pairs_by_clustering(
                 objects, max_distance, min_ratio, cluster_radius
+            )
+        elif algorithm == ALGORITHM_VOLUME:
+            return find_pairs_by_volume(
+                objects, max_distance, min_ratio, volume_ratio_range
             )
         else:
             raise ValueError(f"不支持的算法类型: {algorithm}")
@@ -501,6 +552,98 @@ def find_pairs_by_clustering(
             all_pairs.extend(cluster_pairs)
 
     return all_pairs
+
+
+def find_pairs_by_volume(
+    objects: List[bpy.types.Object],
+    max_distance: float = 5.0,
+    min_ratio: float = 0.0,
+    volume_ratio_range: Tuple[float, float] = (0.5, 2.0)
+) -> List[Tuple[bpy.types.Object, bpy.types.Object, float]]:
+    """算法3:体积相似度配对算法
+
+    考虑物体体积相似度的配对算法。
+    适用于需要考虑体积相似度的场景
+
+    Args:
+        objects: 要配对的物体列表
+        max_distance: 最大配对距离阈值
+        min_ratio: 高模与低模的最小面数比例
+        volume_ratio_range: 体积比例范围 (最小, 最大)
+
+    Returns:
+        配对列表,每项为 (高模对象, 低模对象, 距离评分)
+    """
+    if len(objects) < 2:
+        return []
+
+    face_counts = _collect_face_counts(objects)
+    volumes = {obj: calculate_bbox_volume(obj) for obj in objects}
+
+    # 按面数降序,保证每个物体只与面数不多于自己的物体配对
+    sorted_objects = sorted(objects, key=face_counts.__getitem__, reverse=True)
+    pairs = []
+    used_objects = set()
+
+    min_volume_ratio, max_volume_ratio = volume_ratio_range
+
+    for i, obj1 in enumerate(sorted_objects):
+        if obj1 in used_objects:
+            continue
+
+        faces1 = face_counts[obj1]
+        volume1 = volumes[obj1]
+        best_match = None
+        best_distance = float('inf')
+        best_score = 0.0
+
+        for j in range(i + 1, len(sorted_objects)):
+            obj2 = sorted_objects[j]
+            if obj2 in used_objects:
+                continue
+
+            faces2 = face_counts[obj2]
+            if faces2 <= 0:
+                continue
+
+            # 检查面数比例
+            if min_ratio > 0 and faces1 / faces2 < min_ratio:
+                continue
+
+            # 检查体积比例
+            volume2 = volumes[obj2]
+            if volume2 == 0:
+                continue
+
+            volume_ratio = volume1 / volume2
+            if volume_ratio < min_volume_ratio or volume_ratio > max_volume_ratio:
+                continue
+
+            # 计算距离并检查阈值
+            distance = calculate_distance(obj1, obj2)
+            if distance > max_distance:
+                continue
+
+            # 计算综合评分 (距离 + 体积相似度)
+            distance_score = 1.0 / (1.0 + distance)
+
+            # 体积相似度评分 (比例越接近1越好)
+            volume_similarity = 1.0 - abs(volume_ratio - 1.0)
+            volume_score = volume_similarity * VOLUME_SCORE_WEIGHT
+
+            score = distance_score + volume_score
+
+            if score > best_score:
+                best_match = obj2
+                best_distance = distance
+                best_score = score
+
+        if best_match is not None:
+            pairs.append((obj1, best_match, best_distance))
+            used_objects.add(obj1)
+            used_objects.add(best_match)
+
+    return pairs
 
 
 def cluster_objects(
@@ -721,6 +864,34 @@ class VIEW3D_PT_ClusterParamsPanel(bpy.types.Panel):
         col.prop(settings, "pair_cluster_radius", text="聚类半径")
 
 
+class VIEW3D_PT_VolumeParamsPanel(bpy.types.Panel):
+    """体积算法参数子面板"""
+
+    bl_label = "体积算法参数"
+    bl_idname = "VIEW3D_PT_volume_params_panel"
+    bl_parent_id = "VIEW3D_PT_pair_rename"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = "高低模匹配"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    @classmethod
+    def poll(cls, context: bpy.types.Context) -> bool:
+        """仅在体积算法被选中时显示"""
+        return context.scene.pair_rename_tool.pair_algorithm == ALGORITHM_VOLUME
+
+    def draw(self, context: bpy.types.Context) -> None:
+        """绘制体积算法参数区域"""
+        layout = self.layout
+        settings = context.scene.pair_rename_tool
+
+        col = layout.column(align=True)
+        col.use_property_split = True
+        col.use_property_decorate = False
+        col.prop(settings, "pair_volume_min_ratio", text="最小体积比")
+        col.prop(settings, "pair_volume_max_ratio", text="最大体积比")
+
+
 class VIEW3D_PT_NamingParamsPanel(bpy.types.Panel):
     """命名设置子面板"""
 
@@ -816,6 +987,8 @@ class OBJECT_OT_PairRename(bpy.types.Operator):
                 max_distance=settings.pair_max_distance,
                 min_ratio=settings.pair_min_ratio,
                 cluster_radius=settings.pair_cluster_radius,
+                volume_ratio_range=(settings.pair_volume_min_ratio,
+                                    settings.pair_volume_max_ratio),
             )
         except ValueError as e:
             # 参数验证错误
@@ -950,6 +1123,8 @@ class OBJECT_OT_ResetPreferences(bpy.types.Operator):
         settings.pair_max_distance = DEFAULT_MAX_DISTANCE
         settings.pair_min_ratio = DEFAULT_MIN_RATIO
         settings.pair_cluster_radius = DEFAULT_CLUSTER_RADIUS
+        settings.pair_volume_min_ratio = DEFAULT_VOLUME_MIN_RATIO
+        settings.pair_volume_max_ratio = DEFAULT_VOLUME_MAX_RATIO
         settings.pair_prefix = DEFAULT_PAIRING_PREFIX
         settings.pair_digits = DEFAULT_PREFIX_DIGITS
 
@@ -971,6 +1146,7 @@ classes = [
     VIEW3D_PT_AlgorithmPanel,
     VIEW3D_PT_CommonParamsPanel,
     VIEW3D_PT_ClusterParamsPanel,
+    VIEW3D_PT_VolumeParamsPanel,
     VIEW3D_PT_NamingParamsPanel,
 
     # Operators
@@ -998,7 +1174,7 @@ def register() -> None:
         type=PairRenameSettings
     )
     bpy.types.VIEW3D_MT_object.append(menu_func)
-    print("✓ 高低模匹配插件注册成功 v0.7.0")
+    print("✓ 高低模匹配插件注册成功 v0.8.0")
 
 
 def unregister() -> None:
