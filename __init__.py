@@ -8,7 +8,7 @@
     - 自动识别高低模(基于面数)
     - 批量重命名(格式:BakePoly_001_High/Low)
 
-版本:0.8.0
+版本:0.9.0
 兼容性:Blender 3.4+
 作者:StarAsh042
 许可证:MIT License
@@ -17,7 +17,7 @@
 bl_info = {
     "name": "高低模匹配",
     "author": "StarAsh042",
-    "version": (0, 8, 0),
+    "version": (0, 9, 0),
     "blender": (3, 4, 0),
     "location": "3D视图 > 侧边栏 > 高低模匹配",
     "description": "智能配对并重命名高低模,支持多种算法和自动原点校正",
@@ -716,6 +716,27 @@ class VIEW3D_PT_PairRename(bpy.types.Panel):
             row.label(text=settings.last_operation, icon='INFO')
 
 
+class VIEW3D_PT_UsagePanel(bpy.types.Panel):
+    """使用说明子面板"""
+
+    bl_label = "使用说明"
+    bl_idname = "VIEW3D_PT_usage_panel"
+    bl_parent_id = "VIEW3D_PT_pair_rename"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = "高低模匹配"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    def draw(self, context: bpy.types.Context) -> None:
+        """绘制使用说明区域"""
+        layout = self.layout
+
+        col = layout.column(align=True)
+        col.label(text="1. 选中要处理的网格物体", icon='DOT')
+        col.label(text="2. 选择算法(默认简单模式)", icon='DOT')
+        col.label(text="3. 点击执行配对", icon='DOT')
+
+
 class VIEW3D_PT_MainActionPanel(bpy.types.Panel):
     """主要操作子面板"""
 
@@ -914,6 +935,56 @@ class VIEW3D_PT_NamingParamsPanel(bpy.types.Panel):
 
         col.prop(settings, "pair_prefix", text="前缀")
         col.prop(settings, "pair_digits", text="数字位数")
+
+
+class VIEW3D_PT_StatisticsPanel(bpy.types.Panel):
+    """统计信息子面板"""
+
+    bl_label = "统计信息"
+    bl_idname = "VIEW3D_PT_statistics_panel"
+    bl_parent_id = "VIEW3D_PT_pair_rename"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = "高低模匹配"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    def draw(self, context: bpy.types.Context) -> None:
+        """绘制统计信息区域"""
+        layout = self.layout
+        settings = context.scene.pair_rename_tool
+
+        # 选中物体统计
+        selected_objects = [obj for obj in context.selected_objects if obj.type == 'MESH']
+        selected_count = len(selected_objects)
+
+        col = layout.column(align=True)
+        col.label(text="选中物体统计", icon='USER')
+
+        col = layout.column(align=True)
+        col.label(text=f"选中的网格物体: {selected_count}个")
+
+        if selected_count > 0:
+            face_counts = [get_face_count(obj) for obj in selected_objects]
+            max_faces = max(face_counts) if face_counts else 0
+            min_faces = min(face_counts) if face_counts else 0
+            avg_faces = sum(face_counts) / len(face_counts) if face_counts else 0
+
+            col.label(text=f"最大面数: {max_faces}")
+            col.label(text=f"最小面数: {min_faces}")
+            col.label(text=f"平均面数: {int(avg_faces)}")
+
+        # Baking集合信息
+        layout.separator(factor=0.5)
+        col = layout.column(align=True)
+        col.label(text="Baking集合信息", icon='GROUP')
+
+        col = layout.column(align=True)
+        baking_max_number = get_max_number_in_baking_collection(
+            settings.pair_prefix,
+            settings.pair_digits
+        )
+        col.label(text=f"当前最大序号: {baking_max_number}")
+        col.label(text=f"下次起始序号: {baking_max_number + 1}")
 
 
 class OBJECT_OT_PairRename(bpy.types.Operator):
@@ -1142,12 +1213,14 @@ classes = [
     VIEW3D_PT_PairRename,
 
     # 子面板(依赖主面板,按显示顺序注册)
+    VIEW3D_PT_UsagePanel,
     VIEW3D_PT_MainActionPanel,
     VIEW3D_PT_AlgorithmPanel,
     VIEW3D_PT_CommonParamsPanel,
     VIEW3D_PT_ClusterParamsPanel,
     VIEW3D_PT_VolumeParamsPanel,
     VIEW3D_PT_NamingParamsPanel,
+    VIEW3D_PT_StatisticsPanel,
 
     # Operators
     OBJECT_OT_PairRename,
@@ -1174,7 +1247,7 @@ def register() -> None:
         type=PairRenameSettings
     )
     bpy.types.VIEW3D_MT_object.append(menu_func)
-    print("✓ 高低模匹配插件注册成功 v0.8.0")
+    print("✓ 高低模匹配插件注册成功 v0.9.0")
 
 
 def unregister() -> None:
