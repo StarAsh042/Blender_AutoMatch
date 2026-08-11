@@ -59,6 +59,15 @@ def make_mesh(name, location, subdivisions=0, size=2.0, scale=None):
     return obj
 
 
+def select_only(objects):
+    """只选中指定物体并激活第一个"""
+    for obj in bpy.context.selected_objects:
+        obj.select_set(False)
+    for obj in objects:
+        obj.select_set(True)
+    bpy.context.view_layer.objects.active = objects[0]
+
+
 # ========== 测试用例 ==========
 class TestARegistration(unittest.TestCase):
     """插件注册状态"""
@@ -139,13 +148,42 @@ class TestBFindingPairs(unittest.TestCase):
         self.assertEqual(find_pairs(ALGORITHM_SIMPLE, [a], max_distance=5.0), [])
 
 
+class TestEOperatorUnpair(unittest.TestCase):
+    """撤销配对操作符"""
+
+    def setUp(self):
+        clean_scene()
+        bpy.ops.object.pair_rename_reset()
+
+    def _pair_simple(self):
+        high = make_mesh("MyHigh", (0, 0, 0), subdivisions=3)
+        low = make_mesh("MyLow", (0, 0, 0))
+        select_only([high, low])
+        self.assertEqual(bpy.ops.object.pair_rename(), {'FINISHED'})
+        return high, low
+
+    def test_unpair_restores_names(self):
+        high, low = self._pair_simple()
+        select_only([high, low])
+        result = bpy.ops.object.unpair_selected()
+        self.assertEqual(result, {'FINISHED'})
+        self.assertEqual(high.name, "MyHigh")
+        self.assertEqual(low.name, "MyLow")
+        self.assertNotIn('original_name', high)
+        self.assertNotIn('pairing_prefix', low)
+
+
 # ========== 入口 ==========
 def build_suite():
     """按声明顺序构建测试套件"""
     suite = unittest.TestSuite()
     loader = unittest.TestLoader()
-    suite.addTests(loader.loadTestsFromTestCase(TestARegistration))
-    suite.addTests(loader.loadTestsFromTestCase(TestBFindingPairs))
+    for case in (
+        TestARegistration,
+        TestBFindingPairs,
+        TestEOperatorUnpair,
+    ):
+        suite.addTests(loader.loadTestsFromTestCase(case))
     return suite
 
 
@@ -156,7 +194,7 @@ def main():
     except Exception as exc:
         print(f"addon_utils.enable failed: {exc}")
 
-    if not hasattr(bpy.types, 'OBJECT_OT_pair_rename'):
+    if not hasattr(bpy.types.Scene, 'pair_rename_tool'):
         import Blender_AutoMatch
         Blender_AutoMatch.register()
 

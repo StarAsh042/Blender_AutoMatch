@@ -8,7 +8,7 @@
     - 自动识别高低模(基于面数)
     - 批量重命名(格式:BakePoly_001_High/Low)
 
-版本:0.9.0
+版本:0.10.0
 兼容性:Blender 3.4+
 作者:StarAsh042
 许可证:MIT License
@@ -17,7 +17,7 @@
 bl_info = {
     "name": "高低模匹配",
     "author": "StarAsh042",
-    "version": (0, 9, 0),
+    "version": (0, 10, 0),
     "blender": (3, 4, 0),
     "location": "3D视图 > 侧边栏 > 高低模匹配",
     "description": "智能配对并重命名高低模,支持多种算法和自动原点校正",
@@ -771,6 +771,12 @@ class VIEW3D_PT_MainActionPanel(bpy.types.Panel):
                      text="执行配对重命名",
                      icon='FILE_REFRESH')
 
+        # 撤销按钮
+        row = col.row(align=True)
+        row.operator(OBJECT_OT_UnpairSelected.bl_idname,
+                    text="撤销配对",
+                    icon='CANCEL')
+
 
 class VIEW3D_PT_AlgorithmPanel(bpy.types.Panel):
     """算法选择子面板"""
@@ -1129,11 +1135,86 @@ class OBJECT_OT_PairRename(bpy.types.Operator):
             prefix_str = prefixes[idx]
             high_name, low_name = generate_pair_names(prefix_str)
 
+            # 保存原始名称到自定义属性(用于撤销功能)
+            # 如果已经存在original_name(说明已经配对过),保留最初的原始名称
+            if 'original_name' not in high_obj:
+                high_obj['original_name'] = high_obj.name
+            if 'original_name' not in low_obj:
+                low_obj['original_name'] = low_obj.name
+            high_obj['pairing_prefix'] = prefix_str
+            low_obj['pairing_prefix'] = prefix_str
+
             high_obj.name = high_name
             low_obj.name = low_name
             count += 2
 
         return count
+
+
+class OBJECT_OT_UnpairSelected(bpy.types.Operator):
+    """撤销选中物体的配对命名"""
+
+    bl_idname = "object.unpair_selected"
+    bl_label = "撤销配对"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context: bpy.types.Context) -> Set[str]:
+        """撤销选中物体的配对命名,恢复原始名称
+
+        从物体的自定义属性中读取 original_name,恢复原始名称,
+        并清理配对相关的自定义属性
+
+        Returns:
+            {'FINISHED'} 或 {'CANCELLED'}
+        """
+        selected_objects = context.selected_objects
+
+        if not selected_objects:
+            self.report({'WARNING'}, "请先选择要撤销配对的物体")
+            return {'CANCELLED'}
+
+        restored_count = 0
+        for obj in selected_objects:
+            # 检查是否有原始名称记录
+            if 'original_name' not in obj:
+                continue
+
+            original_name = obj['original_name']
+
+            # 检查名称是否已被其他物体占用
+            holder = bpy.data.objects.get(original_name)
+            if holder is not None:
+                self.report(
+                    {'WARNING'},
+                    f"无法恢复 '{obj.name}' 的名称为 '{original_name}': 名称已被占用"
+                )
+                continue
+
+            # 恢复原始名称
+            obj.name = original_name
+
+            # 清理自定义属性
+            if 'original_name' in obj:
+                del obj['original_name']
+            if 'pairing_prefix' in obj:
+                del obj['pairing_prefix']
+
+            restored_count += 1
+
+        # 生成报告
+        if restored_count > 0:
+            self.report(
+                {'INFO'},
+                f"成功恢复 {restored_count} 个物体的原始名称"
+            )
+        else:
+            self.report({'WARNING'}, "未找到可撤销的物体")
+            return {'CANCELLED'}
+
+        context.scene.pair_rename_tool.last_operation = (
+            f"撤销配对: 恢复 {restored_count} 个"
+        )
+        return {'FINISHED'}
 
 
 class OBJECT_OT_SetPairAlgorithm(bpy.types.Operator):
@@ -1224,6 +1305,7 @@ classes = [
 
     # Operators
     OBJECT_OT_PairRename,
+    OBJECT_OT_UnpairSelected,
     OBJECT_OT_SetPairAlgorithmSimple,
     OBJECT_OT_SetPairAlgorithmCluster,
     OBJECT_OT_SetPairAlgorithmVolume,
@@ -1247,7 +1329,7 @@ def register() -> None:
         type=PairRenameSettings
     )
     bpy.types.VIEW3D_MT_object.append(menu_func)
-    print("✓ 高低模匹配插件注册成功 v0.9.0")
+    print("✓ 高低模匹配插件注册成功 v0.10.0")
 
 
 def unregister() -> None:
