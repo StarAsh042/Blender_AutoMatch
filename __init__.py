@@ -7,8 +7,9 @@
     - 三种智能配对算法(简单/聚类/体积)
     - 自动识别高低模(基于面数)
     - 批量重命名(格式:BakePoly_001_High/Low)
+    - 自动校正物体原点
 
-版本:0.10.0
+版本:0.11.0
 兼容性:Blender 3.4+
 作者:StarAsh042
 许可证:MIT License
@@ -17,7 +18,7 @@
 bl_info = {
     "name": "高低模匹配",
     "author": "StarAsh042",
-    "version": (0, 10, 0),
+    "version": (0, 11, 0),
     "blender": (3, 4, 0),
     "location": "3D视图 > 侧边栏 > 高低模匹配",
     "description": "智能配对并重命名高低模,支持多种算法和自动原点校正",
@@ -30,6 +31,7 @@ import bpy
 from mathutils import Vector
 import re
 import time
+import contextlib
 from collections import deque
 from typing import Dict, List, Tuple, Optional, Set
 
@@ -75,6 +77,8 @@ ERROR_MESSAGES = {
     "no_mesh_objects": "请先选中要处理的网格物体",
     "insufficient_objects": "需要至少选中2个网格物体",
     "no_pairs_found": "没有找到合适的配对。请尝试调整参数或更换算法。",
+    "origin_fix_failed": "设置原点失败: {error}",
+    "origin_fix_success": "已为{count}个物体设置原点到包围盒中心"
 }
 
 
@@ -126,6 +130,12 @@ class PairRenameSettings(bpy.types.PropertyGroup):
         min=0.0,
         max=100.0,
         step=0.1
+    )
+
+    pair_fix_origins: bpy.props.BoolProperty(
+        name="自动设置原点",
+        description="先自动设置物体的原点到包围盒中心(推荐开启)",
+        default=True
     )
 
     # ===== 聚类算法参数 =====
@@ -279,6 +289,81 @@ def calculate_distance(
     center1 = get_object_bbox_center(obj1)
     center2 = get_object_bbox_center(obj2)
     return (center1 - center2).length
+
+
+# ========== 原点处理函数 ==========
+@contextlib.contextmanager
+def _selection_guard(objects: List[bpy.types.Object]):
+    """临时接管选中状态与交互模式,退出时恢复
+
+    使用数据API恢复选中状态,避免 bpy.ops 的 poll 失败影响后续操作
+    """
+    view_layer = bpy.context.view_layer
+    previous_selection = list(bpy.context.selected_objects)
+    previous_active = view_layer.objects.active
+    previous_mode = previous_active.mode if previous_active else 'OBJECT'
+
+    try:
+        if previous_mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+
+        for obj in previous_selection:
+            obj.select_set(False)
+        for obj in objects:
+            obj.select_set(True)
+        view_layer.objects.active = objects[0]
+
+        yield
+    finally:
+        for obj in objects:
+            obj.select_set(False)
+        for obj in previous_selection:
+            obj.select_set(True)
+        view_layer.objects.active = previous_active
+
+        if previous_mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode=previous_mode)
+
+
+def fix_origin_to_bbox_center(obj: bpy.types.Object) -> Tuple[bool, str]:
+    """将物体的原点设置到包围盒中心
+
+    Args:
+        obj: Blender物体对象
+
+    Returns:
+        Tuple[bool, str]: (是否成功, 错误信息/成功信息)
+    """
+    if obj.type != 'MESH':
+        return False, f"物体类型不是MESH: {obj.name}"
+
+    try:
+        with _selection_guard([obj]):
+            bpy.ops.object.origin_set(type='ORIGIN_GEOMETRY', center='BOUNDS')
+        return True, "原点设置成功"
+    except Exception as e:
+        return False, ERROR_MESSAGES["origin_fix_failed"].format(error=str(e))
+
+
+def process_origins_to_bbox_center(objects: List[bpy.types.Object]) -> int:
+    """批量处理所有物体的原点
+
+    一次性选中全部物体后执行单次 origin_set,避免逐物体调用操作符的开销
+
+    Args:
+        objects: Blender物体列表
+
+    Returns:
+        成功设置的物体数量
+    """
+    mesh_objects = [obj for obj in objects if obj.type == 'MESH']
+    if not mesh_objects:
+        return 0
+
+    with _selection_guard(mesh_objects):
+        bpy.ops.object.origin_set(type='ORIGIN_GEOMETRY', center='BOUNDS')
+
+    return len(mesh_objects)
 
 
 # ========== 高低模识别函数 ==========
@@ -860,6 +945,7 @@ class VIEW3D_PT_CommonParamsPanel(bpy.types.Panel):
         col.use_property_split = True
         col.use_property_decorate = False
 
+        col.prop(settings, "pair_fix_origins", text="自动设置原点到包围盒中心")
         col.prop(settings, "pair_max_distance", text="最大配对距离")
         col.prop(settings, "pair_min_ratio", text="面数比例阈值")
 
@@ -1005,10 +1091,11 @@ class OBJECT_OT_PairRename(bpy.types.Operator):
 
         完整的配对重命名流程:
         1. 验证选中物体
-        2. 执行配对算法
-        3. 生成命名前缀
-        4. 重命名物体
-        5. 生成结果报告
+        2. 自动设置原点(可选)
+        3. 执行配对算法
+        4. 生成命名前缀
+        5. 重命名物体
+        6. 生成结果报告
 
         Returns:
             {'FINISHED'} 或 {'CANCELLED'}
@@ -1055,6 +1142,19 @@ class OBJECT_OT_PairRename(bpy.types.Operator):
                 f"需要至少2个有面的网格物体 (当前有效: {len(mesh_objects)}个)"
             )
             return {'CANCELLED'}
+
+        # 自动设置原点(在配对前执行,保证距离计算基于校正后的状态)
+        if settings.pair_fix_origins:
+            try:
+                success_count = process_origins_to_bbox_center(mesh_objects)
+                if success_count > 0:
+                    msg = ERROR_MESSAGES["origin_fix_success"].format(count=success_count)
+                    self.report({'INFO'}, msg)
+            except Exception as e:
+                self.report(
+                    {'WARNING'},
+                    f"设置原点时发生非关键错误: {str(e)}，配对结果不受影响"
+                )
 
         # 执行配对算法
         try:
@@ -1274,6 +1374,7 @@ class OBJECT_OT_ResetPreferences(bpy.types.Operator):
         settings.pair_algorithm = ALGORITHM_SIMPLE
         settings.pair_max_distance = DEFAULT_MAX_DISTANCE
         settings.pair_min_ratio = DEFAULT_MIN_RATIO
+        settings.pair_fix_origins = True
         settings.pair_cluster_radius = DEFAULT_CLUSTER_RADIUS
         settings.pair_volume_min_ratio = DEFAULT_VOLUME_MIN_RATIO
         settings.pair_volume_max_ratio = DEFAULT_VOLUME_MAX_RATIO
@@ -1329,7 +1430,7 @@ def register() -> None:
         type=PairRenameSettings
     )
     bpy.types.VIEW3D_MT_object.append(menu_func)
-    print("✓ 高低模匹配插件注册成功 v0.10.0")
+    print("✓ 高低模匹配插件注册成功 v0.11.0")
 
 
 def unregister() -> None:

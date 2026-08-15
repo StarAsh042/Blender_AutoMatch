@@ -34,7 +34,7 @@ def clean_scene():
         bpy.data.objects.remove(obj, do_unlink=True)
 
 
-def make_mesh(name, location, subdivisions=0, size=2.0, scale=None):
+def make_mesh(name, location, subdivisions=0, size=2.0, scale=None, shift_verts_x=0.0):
     """创建一个网格物体
 
     Args:
@@ -43,7 +43,11 @@ def make_mesh(name, location, subdivisions=0, size=2.0, scale=None):
         subdivisions: 细分级数(0=6面立方体; >0 生成高面数UV球)
         size: 物体尺寸(包围盒跨度)
         scale: 物体缩放(影响包围盒体积)
+        shift_verts_x: 网格顶点沿X轴偏移(用于让原点偏离包围盒中心)
     """
+    active = bpy.context.view_layer.objects.active
+    if active is not None and active.mode != 'OBJECT':
+        bpy.ops.object.mode_set(mode='OBJECT')
     if subdivisions > 0:
         bpy.ops.mesh.primitive_uv_sphere_add(
             radius=size / 2, location=location,
@@ -54,7 +58,11 @@ def make_mesh(name, location, subdivisions=0, size=2.0, scale=None):
     obj.name = name
     if scale is not None:
         obj.scale = scale
-    # 刷新求值,确保 matrix_world / bound_box 反映缩放
+    if shift_verts_x:
+        for vert in obj.data.vertices:
+            vert.co.x += shift_verts_x
+        obj.data.update()
+    # 刷新求值,确保 matrix_world / bound_box 反映缩放与顶点偏移
     bpy.context.view_layer.update()
     return obj
 
@@ -66,6 +74,10 @@ def select_only(objects):
     for obj in objects:
         obj.select_set(True)
     bpy.context.view_layer.objects.active = objects[0]
+
+
+def get_settings():
+    return bpy.context.scene.pair_rename_tool
 
 
 # ========== 测试用例 ==========
@@ -148,6 +160,27 @@ class TestBFindingPairs(unittest.TestCase):
         self.assertEqual(find_pairs(ALGORITHM_SIMPLE, [a], max_distance=5.0), [])
 
 
+class TestDOperatorPair(unittest.TestCase):
+    """配对重命名操作符"""
+
+    def setUp(self):
+        clean_scene()
+        bpy.ops.object.pair_rename_reset()
+
+    def _make_pair_objects(self, shift_verts_x=0.0):
+        high = make_mesh("MyHigh", (0, 0, 0), subdivisions=3, shift_verts_x=shift_verts_x)
+        low = make_mesh("MyLow", (0, 0, 0), shift_verts_x=shift_verts_x)
+        return high, low
+
+    def test_origin_fixed_to_bbox_center_on_success(self):
+        high, low = self._make_pair_objects(shift_verts_x=2.0)
+        select_only([high, low])
+        result = bpy.ops.object.pair_rename()
+        self.assertEqual(result, {'FINISHED'})
+        self.assertAlmostEqual(high.location.x, 2.0, places=4)
+        self.assertAlmostEqual(low.location.x, 2.0, places=4)
+
+
 class TestEOperatorUnpair(unittest.TestCase):
     """撤销配对操作符"""
 
@@ -181,6 +214,7 @@ def build_suite():
     for case in (
         TestARegistration,
         TestBFindingPairs,
+        TestDOperatorPair,
         TestEOperatorUnpair,
     ):
         suite.addTests(loader.loadTestsFromTestCase(case))
