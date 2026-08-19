@@ -8,8 +8,9 @@
     - 自动识别高低模(基于面数)
     - 批量重命名(格式:BakePoly_001_High/Low)
     - 自动校正物体原点
+    - 集合管理(移动到Baking集合)
 
-版本:0.11.0
+版本:0.12.0
 兼容性:Blender 3.4+
 作者:StarAsh042
 许可证:MIT License
@@ -18,7 +19,7 @@
 bl_info = {
     "name": "高低模匹配",
     "author": "StarAsh042",
-    "version": (0, 11, 0),
+    "version": (0, 12, 0),
     "blender": (3, 4, 0),
     "location": "3D视图 > 侧边栏 > 高低模匹配",
     "description": "智能配对并重命名高低模,支持多种算法和自动原点校正",
@@ -183,6 +184,13 @@ class PairRenameSettings(bpy.types.PropertyGroup):
         max=6
     )
 
+    # ===== 集合管理 =====
+    pair_manage_collection: bpy.props.BoolProperty(
+        name="管理集合",
+        description="将配对好的物体移动到Baking集合(推荐开启)",
+        default=True
+    )
+
     # ===== UI折叠状态 =====
     show_common_params: bpy.props.BoolProperty(
         name="显示通用参数",
@@ -205,6 +213,12 @@ class PairRenameSettings(bpy.types.PropertyGroup):
     show_naming_params: bpy.props.BoolProperty(
         name="显示命名参数",
         description="展开/收起命名参数面板",
+        default=True
+    )
+
+    show_collection_params: bpy.props.BoolProperty(
+        name="显示集合参数",
+        description="展开/收起集合参数面板",
         default=True
     )
 
@@ -1029,6 +1043,37 @@ class VIEW3D_PT_NamingParamsPanel(bpy.types.Panel):
         col.prop(settings, "pair_digits", text="数字位数")
 
 
+class VIEW3D_PT_CollectionParamsPanel(bpy.types.Panel):
+    """集合管理子面板"""
+
+    bl_label = "集合管理"
+    bl_idname = "VIEW3D_PT_collection_params_panel"
+    bl_parent_id = "VIEW3D_PT_pair_rename"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = "高低模匹配"
+    bl_options = {'DEFAULT_CLOSED'}
+
+    def draw(self, context: bpy.types.Context) -> None:
+        """绘制集合管理区域"""
+        layout = self.layout
+        settings = context.scene.pair_rename_tool
+
+        col = layout.column(align=True)
+        col.use_property_split = True
+        col.use_property_decorate = False
+
+        col.prop(settings, "pair_manage_collection", text="自动移动到Baking集合")
+
+        # 显示Baking集合状态
+        layout.separator(factor=0.5)
+        if BAKING_COLLECTION_NAME in bpy.data.collections:
+            obj_count = len(bpy.data.collections[BAKING_COLLECTION_NAME].objects)
+            col.label(text=f"✓ Baking集合已存在 ({obj_count}个物体)", icon='CHECKMARK')
+        else:
+            col.label(text="⊗ Baking集合不存在(将自动创建)", icon='CANCEL')
+
+
 class VIEW3D_PT_StatisticsPanel(bpy.types.Panel):
     """统计信息子面板"""
 
@@ -1095,7 +1140,8 @@ class OBJECT_OT_PairRename(bpy.types.Operator):
         3. 执行配对算法
         4. 生成命名前缀
         5. 重命名物体
-        6. 生成结果报告
+        6. 管理集合(可选)
+        7. 生成结果报告
 
         Returns:
             {'FINISHED'} 或 {'CANCELLED'}
@@ -1203,12 +1249,28 @@ class OBJECT_OT_PairRename(bpy.types.Operator):
         # 重命名物体
         renamed_count = self._rename_pairs(pairs, prefixes)
 
+        # 创建或获取Baking集合
+        baking_collection = None
+        if settings.pair_manage_collection:
+            baking_collection = create_or_get_baking_collection()
+
+            # 收集所有配对的物体
+            paired_objects = []
+            for obj1, obj2, _ in pairs:
+                paired_objects.append(obj1)
+                paired_objects.append(obj2)
+
+            # 移动到Baking集合
+            move_objects_to_collection(paired_objects, baking_collection)
+
         processing_time = time.time() - start_time
-        self.report(
-            {'INFO'},
+        report_message = (
             f"成功配对 {len(pairs)} 对,重命名 {renamed_count} 个物体,"
             f"耗时 {processing_time:.2f}秒"
         )
+        if baking_collection:
+            report_message += f",物体已移动到 {BAKING_COLLECTION_NAME} 集合"
+        self.report({'INFO'}, report_message)
         settings.last_operation = (
             f"成功配对 {len(pairs)} 对 ({renamed_count}个物体), "
             f"耗时 {processing_time:.2f}s"
@@ -1380,6 +1442,7 @@ class OBJECT_OT_ResetPreferences(bpy.types.Operator):
         settings.pair_volume_max_ratio = DEFAULT_VOLUME_MAX_RATIO
         settings.pair_prefix = DEFAULT_PAIRING_PREFIX
         settings.pair_digits = DEFAULT_PREFIX_DIGITS
+        settings.pair_manage_collection = True
 
         settings.last_operation = "参数已重置为默认值"
         self.report({'INFO'}, "参数已重置为默认值")
@@ -1402,6 +1465,7 @@ classes = [
     VIEW3D_PT_ClusterParamsPanel,
     VIEW3D_PT_VolumeParamsPanel,
     VIEW3D_PT_NamingParamsPanel,
+    VIEW3D_PT_CollectionParamsPanel,
     VIEW3D_PT_StatisticsPanel,
 
     # Operators
@@ -1430,7 +1494,7 @@ def register() -> None:
         type=PairRenameSettings
     )
     bpy.types.VIEW3D_MT_object.append(menu_func)
-    print("✓ 高低模匹配插件注册成功 v0.11.0")
+    print("✓ 高低模匹配插件注册成功 v0.12.0")
 
 
 def unregister() -> None:

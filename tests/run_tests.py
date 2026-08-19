@@ -29,9 +29,11 @@ from Blender_AutoMatch import (
 
 # ========== 场景与工具函数 ==========
 def clean_scene():
-    """清空场景中的所有物体"""
+    """清空场景中的所有物体与非场景集合"""
     for obj in list(bpy.data.objects):
         bpy.data.objects.remove(obj, do_unlink=True)
+    for coll in list(bpy.data.collections):
+        bpy.data.collections.remove(coll)
 
 
 def make_mesh(name, location, subdivisions=0, size=2.0, scale=None, shift_verts_x=0.0):
@@ -160,6 +162,34 @@ class TestBFindingPairs(unittest.TestCase):
         self.assertEqual(find_pairs(ALGORITHM_SIMPLE, [a], max_distance=5.0), [])
 
 
+class TestCUtils(unittest.TestCase):
+    """工具函数"""
+
+    def setUp(self):
+        clean_scene()
+
+    def test_max_number_in_baking_collection(self):
+        from Blender_AutoMatch import get_max_number_in_baking_collection
+        coll = bpy.data.collections.new("Baking")
+        bpy.context.scene.collection.children.link(coll)
+        for name in ("BakePoly_007_High", "BakePoly_003_Low",
+                     "BakePoly_010_High", "Other", "BakePoly_12_High"):
+            obj = make_mesh(name, (0, 0, 0))
+            coll.objects.link(obj)
+        # 位数不同的序号(12是2位)不算,取3位序号最大值10
+        self.assertEqual(get_max_number_in_baking_collection("BakePoly_", 3), 10)
+
+    def test_no_baking_collection_returns_zero(self):
+        from Blender_AutoMatch import get_max_number_in_baking_collection
+        self.assertEqual(get_max_number_in_baking_collection("BakePoly_", 3), 0)
+
+    def test_generate_prefixes(self):
+        from Blender_AutoMatch import generate_prefixes
+        self.assertEqual(
+            generate_prefixes("BakePoly_", 3, 8, 2),
+            ["BakePoly_008", "BakePoly_009"])
+
+
 class TestDOperatorPair(unittest.TestCase):
     """配对重命名操作符"""
 
@@ -171,6 +201,20 @@ class TestDOperatorPair(unittest.TestCase):
         high = make_mesh("MyHigh", (0, 0, 0), subdivisions=3, shift_verts_x=shift_verts_x)
         low = make_mesh("MyLow", (0, 0, 0), shift_verts_x=shift_verts_x)
         return high, low
+
+    def test_rename_flow(self):
+        high, low = self._make_pair_objects()
+        select_only([high, low])
+        result = bpy.ops.object.pair_rename()
+        self.assertEqual(result, {'FINISHED'})
+        self.assertEqual(high.name, "BakePoly_001_High")
+        self.assertEqual(low.name, "BakePoly_001_Low")
+        self.assertEqual(high['original_name'], "MyHigh")
+        self.assertEqual(low['original_name'], "MyLow")
+        baking = bpy.data.collections.get("Baking")
+        self.assertIsNotNone(baking)
+        self.assertIn(high.name, baking.objects)
+        self.assertIn(low.name, baking.objects)
 
     def test_origin_fixed_to_bbox_center_on_success(self):
         high, low = self._make_pair_objects(shift_verts_x=2.0)
@@ -214,6 +258,7 @@ def build_suite():
     for case in (
         TestARegistration,
         TestBFindingPairs,
+        TestCUtils,
         TestDOperatorPair,
         TestEOperatorUnpair,
     ):
