@@ -10,7 +10,7 @@
     - 自动校正物体原点
     - 集合管理(移动到Baking集合)
 
-版本:0.12.0
+版本:1.0.0
 兼容性:Blender 3.4+
 作者:StarAsh042
 许可证:MIT License
@@ -19,7 +19,7 @@
 bl_info = {
     "name": "高低模匹配",
     "author": "StarAsh042",
-    "version": (0, 12, 0),
+    "version": (1, 0, 0),
     "blender": (3, 4, 0),
     "location": "3D视图 > 侧边栏 > 高低模匹配",
     "description": "智能配对并重命名高低模,支持多种算法和自动原点校正",
@@ -35,6 +35,11 @@ import time
 import contextlib
 from collections import deque
 from typing import Dict, List, Tuple, Optional, Set
+
+
+# ========== 版本信息 ==========
+__version__ = "1.0.0"
+__blender_min_version__ = (3, 4, 0)
 
 
 # ========== 默认配置 ==========
@@ -1487,24 +1492,59 @@ def menu_func(self, context: bpy.types.Context) -> None:
 
 
 def register() -> None:
-    """注册插件"""
+    """注册插件
+
+    注册所有必要的类、属性和菜单项
+    """
+    print("=" * 60)
+    print(f"开始注册高低模配对重命名插件 v{__version__}...")
+    print("=" * 60)
+
+    # 注册所有类
     for cls in classes:
         bpy.utils.register_class(cls)
+    print(f"✓ 已注册 {len(classes)} 个类")
+
+    # 添加 Scene 属性
     bpy.types.Scene.pair_rename_tool = bpy.props.PointerProperty(
         type=PairRenameSettings
     )
+    print("✓ Scene属性注册成功")
+
+    # 添加到菜单
     bpy.types.VIEW3D_MT_object.append(menu_func)
-    print("✓ 高低模匹配插件注册成功 v0.12.0")
+    print("✓ 菜单项添加成功")
+
+    print(f"✓ 插件注册成功!版本: {__version__}")
 
 
 def unregister() -> None:
-    """注销插件"""
+    """注销插件
+
+    清理所有注册的类、属性和菜单项
+    """
+    print("=" * 60)
+    print("开始注销插件...")
+    print("=" * 60)
+
+    # 从菜单中移除
     bpy.types.VIEW3D_MT_object.remove(menu_func)
+    print("✓ 菜单项移除成功")
+
+    # 删除 Scene 属性
     if hasattr(bpy.types.Scene, 'pair_rename_tool'):
         del bpy.types.Scene.pair_rename_tool
+        print("✓ Scene属性注销成功")
+
+    # 反向注销所有类
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
-    print("✓ 高低模匹配插件注销完成")
+    print(f"✓ 已注销 {len(classes)} 个类")
+
+    print("=" * 60)
+    print("✓ 插件注销完成")
+    print("=" * 60)
+    print()
 
 
 # ========== 命令行执行支持 ==========
