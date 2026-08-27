@@ -10,7 +10,7 @@
     - 自动校正物体原点
     - 集合管理(移动到Baking集合)
 
-版本:1.0.0
+版本:1.1.0
 兼容性:Blender 3.4+
 作者:StarAsh042
 许可证:MIT License
@@ -19,7 +19,7 @@
 bl_info = {
     "name": "高低模匹配",
     "author": "StarAsh042",
-    "version": (1, 0, 0),
+    "version": (1, 1, 0),
     "blender": (3, 4, 0),
     "location": "3D视图 > 侧边栏 > 高低模匹配",
     "description": "智能配对并重命名高低模,支持多种算法和自动原点校正",
@@ -38,7 +38,7 @@ from typing import Dict, List, Tuple, Optional, Set
 
 
 # ========== 版本信息 ==========
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 __blender_min_version__ = (3, 4, 0)
 
 
@@ -294,19 +294,48 @@ def get_bbox_size(obj: bpy.types.Object) -> Vector:
     return max_co - min_co
 
 
-def calculate_bbox_volume(obj: bpy.types.Object) -> float:
-    """计算包围盒体积"""
+def calculate_bbox_volume(
+    obj: bpy.types.Object,
+    cache: Optional['ObjectMetadataCache'] = None
+) -> float:
+    """计算包围盒体积
+
+    Args:
+        obj: Blender物体对象
+        cache: 可选的元数据缓存,传入时直接复用缓存结果
+
+    Returns:
+        包围盒体积
+    """
+    if cache is not None:
+        return cache.get_volume(obj)
+
     size = get_bbox_size(obj)
     return size.x * size.y * size.z
 
 
 def calculate_distance(
     obj1: bpy.types.Object,
-    obj2: bpy.types.Object
+    obj2: bpy.types.Object,
+    cache: Optional['ObjectMetadataCache'] = None
 ) -> float:
-    """计算两个物体之间的距离(包围盒中心点间)"""
-    center1 = get_object_bbox_center(obj1)
-    center2 = get_object_bbox_center(obj2)
+    """计算两个物体之间的距离
+
+    Args:
+        obj1: 第一个物体
+        obj2: 第二个物体
+        cache: 可选的元数据缓存
+
+    Returns:
+        两物体中心点之间的距离
+    """
+    if cache:
+        center1 = cache.get_center(obj1)
+        center2 = cache.get_center(obj2)
+    else:
+        center1 = get_object_bbox_center(obj1)
+        center2 = get_object_bbox_center(obj2)
+
     return (center1 - center2).length
 
 
@@ -467,6 +496,91 @@ def filter_mesh_objects_with_faces(objects: List[bpy.types.Object]) -> List[bpy.
     return [obj for obj in objects if obj.type == 'MESH' and get_face_count(obj) > 0]
 
 
+# ========== 元数据缓存 ==========
+class ObjectMetadataCache:
+    """物体元数据缓存,避免重复计算包围盒信息
+
+    Attributes:
+        _cache: 内部缓存字典,存储物体的元数据
+    """
+
+    def __init__(self) -> None:
+        """初始化缓存对象"""
+        self._cache: Dict[int, dict] = {}
+
+    def get_bbox(self, obj: bpy.types.Object) -> dict:
+        """获取包围盒信息(带缓存)
+
+        Args:
+            obj: Blender物体对象
+
+        Returns:
+            包含 'center', 'size', 'volume' 的字典
+        """
+        # 使用对象ID作为缓存键
+        obj_id = id(obj)
+
+        if obj_id not in self._cache:
+            min_co, max_co = get_world_bbox(obj)
+            size = max_co - min_co
+
+            # 存入缓存
+            self._cache[obj_id] = {
+                'center': (min_co + max_co) * 0.5,
+                'size': size,
+                'volume': size.x * size.y * size.z,
+                'min': min_co,
+                'max': max_co
+            }
+
+        return self._cache[obj_id]
+
+    def get_center(self, obj: bpy.types.Object) -> Vector:
+        """获取物体中心点(带缓存)
+
+        Args:
+            obj: Blender物体对象
+
+        Returns:
+            中心点坐标(Vector)
+        """
+        return self.get_bbox(obj)['center']
+
+    def get_size(self, obj: bpy.types.Object) -> Vector:
+        """获取物体尺寸(带缓存)
+
+        Args:
+            obj: Blender物体对象
+
+        Returns:
+            尺寸(Vector)
+        """
+        return self.get_bbox(obj)['size']
+
+    def get_volume(self, obj: bpy.types.Object) -> float:
+        """获取物体体积(带缓存)
+
+        Args:
+            obj: Blender物体对象
+
+        Returns:
+            体积值
+        """
+        return self.get_bbox(obj)['volume']
+
+    def clear(self) -> None:
+        """清空缓存"""
+        self._cache.clear()
+
+    def get_cache_size(self) -> int:
+        """获取缓存大小
+
+        Returns:
+            缓存的物体数量
+        """
+        return len(self._cache)
+
+
 # ========== 配对算法 ==========
 def _collect_face_counts(objects: List[bpy.types.Object]) -> Dict[bpy.types.Object, int]:
     """一次性统计所有物体的面数
@@ -482,7 +596,8 @@ def find_pairs(
     max_distance: float = 5.0,
     min_ratio: float = 0.0,
     cluster_radius: float = 5.0,
-    volume_ratio_range: Tuple[float, float] = (0.5, 2.0)
+    volume_ratio_range: Tuple[float, float] = (0.5, 2.0),
+    use_cache: bool = True
 ) -> List[Tuple[bpy.types.Object, bpy.types.Object, float]]:
     """根据指定算法查找高低模配对
 
@@ -493,6 +608,7 @@ def find_pairs(
         min_ratio: 高模与低模的最小面数比例(0表示不限制)
         cluster_radius: 聚类半径(聚类算法用)
         volume_ratio_range: 体积比例范围(体积算法用)
+        use_cache: 是否使用缓存优化性能
 
     Returns:
         配对列表,每项为 (高模对象, 低模对象, 距离评分)
@@ -532,19 +648,22 @@ def find_pairs(
     if len(objects) < 2:
         return []
 
-    # 根据算法类型调用相应的实现
+    # 整个配对过程共享同一份元数据缓存
+    cache = ObjectMetadataCache() if use_cache else None
+
+    # 根据算法类型调用相应的实现(共享同一份缓存)
     try:
         if algorithm == ALGORITHM_SIMPLE:
             return find_pairs_by_distance_and_faces(
-                objects, max_distance, min_ratio
+                objects, max_distance, min_ratio, use_cache, cache
             )
         elif algorithm == ALGORITHM_CLUSTER:
             return find_pairs_by_clustering(
-                objects, max_distance, min_ratio, cluster_radius
+                objects, max_distance, min_ratio, cluster_radius, use_cache, cache
             )
         elif algorithm == ALGORITHM_VOLUME:
             return find_pairs_by_volume(
-                objects, max_distance, min_ratio, volume_ratio_range
+                objects, max_distance, min_ratio, volume_ratio_range, use_cache, cache
             )
         else:
             raise ValueError(f"不支持的算法类型: {algorithm}")
@@ -556,7 +675,9 @@ def find_pairs(
 def find_pairs_by_distance_and_faces(
     objects: List[bpy.types.Object],
     max_distance: float = 5.0,
-    min_ratio: float = 0.0
+    min_ratio: float = 0.0,
+    use_cache: bool = True,
+    cache: Optional[ObjectMetadataCache] = None
 ) -> List[Tuple[bpy.types.Object, bpy.types.Object, float]]:
     """算法1:基于距离和面数的简单配对
 
@@ -566,12 +687,17 @@ def find_pairs_by_distance_and_faces(
         objects: 要配对的物体列表
         max_distance: 最大配对距离阈值
         min_ratio: 高模与低模的最小面数比例(0表示不限制)
+        use_cache: 是否使用元数据缓存优化性能
+        cache: 调用方共享的缓存,传入时优先于 use_cache
 
     Returns:
         配对列表,每项为 (高模对象, 低模对象, 距离评分)
     """
     if len(objects) < 2:
         return []
+
+    if cache is None and use_cache:
+        cache = ObjectMetadataCache()
 
     face_counts = _collect_face_counts(objects)
 
@@ -604,7 +730,7 @@ def find_pairs_by_distance_and_faces(
                 continue
 
             # 计算距离并检查阈值
-            distance = calculate_distance(obj1, obj2)
+            distance = calculate_distance(obj1, obj2, cache)
             if distance > max_distance:
                 continue
 
@@ -624,7 +750,9 @@ def find_pairs_by_clustering(
     objects: List[bpy.types.Object],
     max_distance: float = 5.0,
     min_ratio: float = 0.0,
-    cluster_radius: float = 5.0
+    cluster_radius: float = 5.0,
+    use_cache: bool = True,
+    cache: Optional[ObjectMetadataCache] = None
 ) -> List[Tuple[bpy.types.Object, bpy.types.Object, float]]:
     """算法2:聚类配对算法
 
@@ -636,6 +764,8 @@ def find_pairs_by_clustering(
         max_distance: 最大配对距离阈值
         min_ratio: 高模与低模的最小面数比例
         cluster_radius: 聚类半径
+        use_cache: 是否使用元数据缓存优化性能
+        cache: 调用方共享的缓存,传入时优先于 use_cache
 
     Returns:
         配对列表,每项为 (高模对象, 低模对象, 距离评分)
@@ -643,15 +773,18 @@ def find_pairs_by_clustering(
     if len(objects) < 2:
         return []
 
-    # 聚类
-    clusters = cluster_objects(objects, cluster_radius)
+    if cache is None and use_cache:
+        cache = ObjectMetadataCache()
 
-    # 在每个聚类内进行配对
+    # 聚类
+    clusters = cluster_objects(objects, cluster_radius, cache)
+
+    # 在每个聚类内进行配对(共享同一份缓存)
     all_pairs = []
     for cluster in clusters:
         if len(cluster) >= 2:
             cluster_pairs = find_pairs_by_distance_and_faces(
-                cluster, max_distance, min_ratio
+                cluster, max_distance, min_ratio, use_cache, cache
             )
             all_pairs.extend(cluster_pairs)
 
@@ -662,7 +795,9 @@ def find_pairs_by_volume(
     objects: List[bpy.types.Object],
     max_distance: float = 5.0,
     min_ratio: float = 0.0,
-    volume_ratio_range: Tuple[float, float] = (0.5, 2.0)
+    volume_ratio_range: Tuple[float, float] = (0.5, 2.0),
+    use_cache: bool = True,
+    cache: Optional[ObjectMetadataCache] = None
 ) -> List[Tuple[bpy.types.Object, bpy.types.Object, float]]:
     """算法3:体积相似度配对算法
 
@@ -674,6 +809,8 @@ def find_pairs_by_volume(
         max_distance: 最大配对距离阈值
         min_ratio: 高模与低模的最小面数比例
         volume_ratio_range: 体积比例范围 (最小, 最大)
+        use_cache: 是否使用元数据缓存优化性能
+        cache: 调用方共享的缓存,传入时优先于 use_cache
 
     Returns:
         配对列表,每项为 (高模对象, 低模对象, 距离评分)
@@ -681,8 +818,11 @@ def find_pairs_by_volume(
     if len(objects) < 2:
         return []
 
+    if cache is None and use_cache:
+        cache = ObjectMetadataCache()
+
     face_counts = _collect_face_counts(objects)
-    volumes = {obj: calculate_bbox_volume(obj) for obj in objects}
+    volumes = {obj: calculate_bbox_volume(obj, cache) for obj in objects}
 
     # 按面数降序,保证每个物体只与面数不多于自己的物体配对
     sorted_objects = sorted(objects, key=face_counts.__getitem__, reverse=True)
@@ -724,7 +864,7 @@ def find_pairs_by_volume(
                 continue
 
             # 计算距离并检查阈值
-            distance = calculate_distance(obj1, obj2)
+            distance = calculate_distance(obj1, obj2, cache)
             if distance > max_distance:
                 continue
 
@@ -752,13 +892,15 @@ def find_pairs_by_volume(
 
 def cluster_objects(
     objects: List[bpy.types.Object],
-    radius: float
+    radius: float,
+    cache: Optional[ObjectMetadataCache] = None
 ) -> List[List[bpy.types.Object]]:
     """将物体按空间位置聚类
 
     Args:
         objects: 物体列表
         radius: 聚类半径
+        cache: 元数据缓存对象,传入可避免重复计算包围盒
 
     Returns:
         聚类列表,每个聚类是一个物体列表
@@ -788,7 +930,7 @@ def cluster_objects(
                     continue
 
                 # 如果在聚类半径内,加入聚类
-                if calculate_distance(current, other) <= radius:
+                if calculate_distance(current, other, cache) <= radius:
                     cluster.append(other)
                     used_objects.add(other)
                     queue.append(other)
@@ -1217,6 +1359,7 @@ class OBJECT_OT_PairRename(bpy.types.Operator):
                 cluster_radius=settings.pair_cluster_radius,
                 volume_ratio_range=(settings.pair_volume_min_ratio,
                                     settings.pair_volume_max_ratio),
+                use_cache=True
             )
         except ValueError as e:
             # 参数验证错误
@@ -1480,6 +1623,17 @@ classes = [
     OBJECT_OT_SetPairAlgorithmCluster,
     OBJECT_OT_SetPairAlgorithmVolume,
     OBJECT_OT_ResetPreferences,
+]
+
+
+# 公开类和函数(用于外部访问)
+__all__ = [
+    '__version__',
+    '__blender_min_version__',
+    'register',
+    'unregister',
+    'find_pairs',
+    'ObjectMetadataCache',
 ]
 
 
