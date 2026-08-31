@@ -19,8 +19,8 @@ _PROJECT_PARENT = os.path.dirname(
 if _PROJECT_PARENT not in sys.path:
     sys.path.insert(0, _PROJECT_PARENT)
 
-from Blender_AutoMatch import (
-    find_pairs,
+from Blender_AutoMatch import find_pairs
+from Blender_AutoMatch.constants import (
     ALGORITHM_SIMPLE,
     ALGORITHM_CLUSTER,
     ALGORITHM_VOLUME,
@@ -169,7 +169,7 @@ class TestCUtils(unittest.TestCase):
         clean_scene()
 
     def test_max_number_in_baking_collection(self):
-        from Blender_AutoMatch import get_max_number_in_baking_collection
+        from Blender_AutoMatch.utils import get_max_number_in_baking_collection
         coll = bpy.data.collections.new("Baking")
         bpy.context.scene.collection.children.link(coll)
         for name in ("BakePoly_007_High", "BakePoly_003_Low",
@@ -180,11 +180,11 @@ class TestCUtils(unittest.TestCase):
         self.assertEqual(get_max_number_in_baking_collection("BakePoly_", 3), 10)
 
     def test_no_baking_collection_returns_zero(self):
-        from Blender_AutoMatch import get_max_number_in_baking_collection
+        from Blender_AutoMatch.utils import get_max_number_in_baking_collection
         self.assertEqual(get_max_number_in_baking_collection("BakePoly_", 3), 0)
 
     def test_generate_prefixes(self):
-        from Blender_AutoMatch import generate_prefixes
+        from Blender_AutoMatch.utils import generate_prefixes
         self.assertEqual(
             generate_prefixes("BakePoly_", 3, 8, 2),
             ["BakePoly_008", "BakePoly_009"])
