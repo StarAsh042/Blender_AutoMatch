@@ -17,3 +17,12 @@ __pycache__/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Rust 构建产物
+target/
+dist/
+build/
+
+# 内核编译产物(.pyd 为发布形态,.dll 为中间产物)
+*.pyd
+*.dll

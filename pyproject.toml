@@ -1,0 +1,14 @@
+[build-system]
+requires = ["maturin>=1.15,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "blender-automatch-core"
+version = "1.1.0"
+description = "Blender 高低模配对插件 Rust 内核(_core)"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+
+[tool.maturin]
+#  wheel 内模块路径:提取后即得插件目录下的 _core.pyd
+module-name = "Blender_AutoMatch._core"
