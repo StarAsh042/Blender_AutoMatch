@@ -6,6 +6,9 @@
     - SIMPLE: 基于距离和面数的简单配对
     - CLUSTER: 聚类配对算法
     - VOLUME: 体积相似度配对算法
+
+简单算法由 Rust 内核(_core)实现,本模块为薄壳:
+负责 bpy 交互与元数据提取,纯计算交还内核。
 """
 
 import bpy
@@ -24,6 +27,16 @@ from ..utils import (
     calculate_distance,
     calculate_bbox_volume,
 )
+
+try:
+    from .. import _core
+except ImportError as exc:
+    raise ImportError(
+        "未找到 Rust 内核模块 _core.pyd。请在仓库根目录执行:"
+        "cargo build --release,然后把 target/release/_core.dll "
+        "复制为插件目录下的 _core.pyd"
+        "(或执行 maturin build --release 后从 wheel 中提取)"
+    ) from exc
 
 
 def _collect_face_counts(objects: List[bpy.types.Object]) -> Dict[bpy.types.Object, int]:
@@ -50,8 +63,8 @@ def find_pairs(
         objects: 要配对的物体列表
         max_distance: 最大配对距离
         min_ratio: 高模与低模的最小面数比例
-        cluster_radius: 聚类半径（聚类算法用）
-        volume_ratio_range: 体积比例范围（体积算法用）
+        cluster_radius: 聚类半径(聚类算法用)
+        volume_ratio_range: 体积比例范围(体积算法用)
         use_cache: 是否使用缓存优化性能
         
     Returns:
@@ -123,10 +136,11 @@ def find_pairs_by_distance_and_faces(
     use_cache: bool = True,
     cache: Optional[ObjectMetadataCache] = None
 ) -> List[Tuple[bpy.types.Object, bpy.types.Object, float]]:
-    """算法1:基于距离和面数的简单配对
-    
-    适用于物体分布均匀、数量较少的场景
-    
+    """算法1:基于距离和面数的简单配对(Rust 内核实现)
+
+    薄壳职责:提取 (center, faces) 平铺数据 → 调用内核 → 索引对映射回 bpy 对象。
+    纯计算逻辑位于 Rust 内核(src/lib.rs),此处不再重复实现。
+
     Args:
         objects: 要配对的物体列表
         max_distance: 最大配对距离阈值
@@ -144,50 +158,12 @@ def find_pairs_by_distance_and_faces(
         cache = ObjectMetadataCache()
     
     face_counts = _collect_face_counts(objects)
+    centers = [tuple(cache.get_center(obj)) for obj in objects]
+    faces = [face_counts[obj] for obj in objects]
     
-    # 按面数降序,保证每个物体只与面数不多于自己的物体配对
-    sorted_objects = sorted(objects, key=face_counts.__getitem__, reverse=True)
-    pairs = []
-    used_objects = set()
+    index_pairs = _core.find_pairs_simple(centers, faces, max_distance, min_ratio)
     
-    # 遍历所有物体进行配对
-    for i, obj1 in enumerate(sorted_objects):
-        if obj1 in used_objects:
-            continue
-        
-        faces1 = face_counts[obj1]
-        best_match = None
-        best_distance = float('inf')
-        
-        # 寻找最近的未使用物体
-        for j in range(i + 1, len(sorted_objects)):
-            obj2 = sorted_objects[j]
-            if obj2 in used_objects:
-                continue
-            
-            faces2 = face_counts[obj2]
-            if faces2 <= 0:
-                continue
-            
-            # 检查面数比例
-            if min_ratio > 0 and faces1 / faces2 < min_ratio:
-                continue
-            
-            # 计算距离并检查阈值
-            distance = calculate_distance(obj1, obj2, cache)
-            if distance > max_distance:
-                continue
-            
-            if distance < best_distance:
-                best_match = obj2
-                best_distance = distance
-        
-        if best_match is not None:
-            pairs.append((obj1, best_match, best_distance))
-            used_objects.add(obj1)
-            used_objects.add(best_match)
-    
-    return pairs
+    return [(objects[i], objects[j], score) for i, j, score in index_pairs]
 
 
 def find_pairs_by_clustering(
