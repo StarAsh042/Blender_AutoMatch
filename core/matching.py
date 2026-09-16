@@ -7,13 +7,12 @@
     - CLUSTER: 聚类配对算法
     - VOLUME: 体积相似度配对算法
 
-简单算法由 Rust 内核(_core)实现,本模块为薄壳:
+简单算法与聚类划分由 Rust 内核(_core)实现,本模块为薄壳:
 负责 bpy 交互与元数据提取,纯计算交还内核。
 """
 
 import bpy
 from typing import Dict, List, Optional, Tuple
-from collections import deque
 
 from ..constants import (
     ALGORITHM_SIMPLE,
@@ -174,10 +173,9 @@ def find_pairs_by_clustering(
     use_cache: bool = True,
     cache: Optional[ObjectMetadataCache] = None
 ) -> List[Tuple[bpy.types.Object, bpy.types.Object, float]]:
-    """算法2:聚类配对算法
-    
-    先按空间位置聚类,然后在每个聚类内进行配对。
-    适用于物体分布有明显聚类特征的场景(如多个角色)
+    """算法2:聚类配对算法(Rust 内核实现)
+
+    聚类划分由内核完成,聚类内的配对复用简单配对内核。
     
     Args:
         objects: 要配对的物体列表
@@ -196,7 +194,7 @@ def find_pairs_by_clustering(
     if cache is None and use_cache:
         cache = ObjectMetadataCache()
     
-    # 聚类
+    # 聚类(内核实现)
     clusters = cluster_objects(objects, cluster_radius, cache)
     
     # 在每个聚类内进行配对(共享同一份缓存)
@@ -315,46 +313,25 @@ def cluster_objects(
     radius: float,
     cache: Optional[ObjectMetadataCache] = None
 ) -> List[List[bpy.types.Object]]:
-    """将物体按空间位置聚类
-    
+    """将物体按空间位置聚类(Rust 内核实现)
+
+    薄壳职责:提取中心点平铺数据 → 调用内核 → 索引聚类映射回 bpy 对象。
+
     Args:
         objects: 物体列表
         radius: 聚类半径
         cache: 元数据缓存对象,传入可避免重复计算包围盒
-        
+
     Returns:
         聚类列表,每个聚类是一个物体列表
     """
     if not objects:
         return []
     
-    clusters = []
-    used_objects = set()
+    if cache is None:
+        cache = ObjectMetadataCache()
     
-    for obj in objects:
-        if obj in used_objects:
-            continue
-        
-        # 创建新聚类
-        cluster = [obj]
-        used_objects.add(obj)
-        
-        # 使用BFS寻找邻近物体
-        queue = deque([obj])
-        
-        while queue:
-            current = queue.popleft()
-            
-            for other in objects:
-                if other in used_objects:
-                    continue
-                
-                # 如果在聚类半径内,加入聚类
-                if calculate_distance(current, other, cache) <= radius:
-                    cluster.append(other)
-                    used_objects.add(other)
-                    queue.append(other)
-        
-        clusters.append(cluster)
+    centers = [tuple(cache.get_center(obj)) for obj in objects]
+    index_clusters = _core.cluster_objects(centers, radius)
     
-    return clusters
+    return [[objects[i] for i in cluster] for cluster in index_clusters]

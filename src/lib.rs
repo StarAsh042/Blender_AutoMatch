@@ -9,9 +9,11 @@
 //!   - 本内核不认识 bpy,只做纯计算,返回索引对(索引对应入参顺序);
 //!   - 计算过程经 `py.detach` 释放 GIL,避免阻塞 Blender 界面。
 //!
-//! 已迁入:简单配对算法(#20)。聚类/体积算法随后续提交迁入。
+//! 已迁入:简单配对算法(#20)、聚类划分与聚类配对(#21)。
+//! 体积算法随后续提交迁入。
 
 use pyo3::prelude::*;
+use std::collections::VecDeque;
 
 /// 计算两个包围盒中心点之间的欧氏距离
 ///
@@ -84,6 +86,44 @@ fn find_pairs_simple_impl(
     pairs
 }
 
+/// 聚类划分:按空间位置将物体分入不同聚类(BFS,纯计算实现)
+///
+/// 返回聚类列表,每个聚类是索引列表;索引对应入参顺序。
+fn cluster_objects_impl(centers: &[[f64; 3]], radius: f64) -> Vec<Vec<usize>> {
+    let n = centers.len();
+    let mut used = vec![false; n];
+    let mut clusters = Vec::new();
+
+    for start in 0..n {
+        if used[start] {
+            continue;
+        }
+        // 创建新聚类,使用 BFS 寻找邻近物体
+        let mut cluster = vec![start];
+        used[start] = true;
+        let mut queue = VecDeque::new();
+        queue.push_back(start);
+
+        while let Some(current) = queue.pop_front() {
+            for (other, used_flag) in used.iter_mut().enumerate() {
+                if *used_flag {
+                    continue;
+                }
+                // 如果在聚类半径内,加入聚类
+                if center_distance(centers[current], centers[other]) <= radius {
+                    cluster.push(other);
+                    *used_flag = true;
+                    queue.push_back(other);
+                }
+            }
+        }
+
+        clusters.push(cluster);
+    }
+
+    clusters
+}
+
 /// Python 绑定:简单配对(计算期间释放 GIL)
 #[pyfunction]
 fn find_pairs_simple(
@@ -94,6 +134,12 @@ fn find_pairs_simple(
     min_ratio: f64,
 ) -> Vec<(usize, usize, f64)> {
     py.detach(|| find_pairs_simple_impl(&centers, &faces, max_distance, min_ratio))
+}
+
+/// Python 绑定:聚类划分(计算期间释放 GIL)
+#[pyfunction]
+fn cluster_objects(py: Python<'_>, centers: Vec<[f64; 3]>, radius: f64) -> Vec<Vec<usize>> {
+    py.detach(|| cluster_objects_impl(&centers, radius))
 }
 
 /// 内核版本号(与 `CARGO_PKG_VERSION` 同步,供导入自检)
@@ -107,6 +153,7 @@ fn kernel_version() -> String {
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(kernel_version, m)?)?;
     m.add_function(wrap_pyfunction!(find_pairs_simple, m)?)?;
+    m.add_function(wrap_pyfunction!(cluster_objects, m)?)?;
     Ok(())
 }
 
@@ -140,5 +187,24 @@ mod tests {
         let faces = vec![10, 9];
         // 比例 10/9 ≈ 1.11 < 2.0 → 拒绝配对
         assert!(find_pairs_simple_impl(&centers, &faces, 5.0, 2.0).is_empty());
+    }
+
+    #[test]
+    fn cluster_objects_splits_distant_groups() {
+        let centers = vec![
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [100.0, 0.0, 0.0],
+            [101.0, 0.0, 0.0],
+        ];
+        let clusters = cluster_objects_impl(&centers, 2.0);
+        assert_eq!(clusters, vec![vec![0, 1], vec![2, 3]]);
+    }
+
+    #[test]
+    fn cluster_objects_radius_prevents_cross_cluster_pair() {
+        let centers = vec![[0.0, 0.0, 0.0], [3.0, 0.0, 0.0]];
+        let clusters = cluster_objects_impl(&centers, 1.0);
+        assert_eq!(clusters, vec![vec![0], vec![1]]);
     }
 }
