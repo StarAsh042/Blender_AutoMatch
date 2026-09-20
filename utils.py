@@ -8,7 +8,7 @@ import bpy
 from mathutils import Vector
 import re
 import contextlib
-from typing import List, Tuple, Optional, TYPE_CHECKING
+from typing import List, Tuple, Optional
 
 from .constants import (
     BAKING_COLLECTION_NAME,
@@ -18,9 +18,6 @@ from .constants import (
     DEFAULT_PREFIX_DIGITS,
     ERROR_MESSAGES
 )
-
-if TYPE_CHECKING:
-    from .core.cache import ObjectMetadataCache
 
 
 # ========== 基础几何函数 ==========
@@ -62,83 +59,6 @@ def get_world_bbox(obj: bpy.types.Object) -> Tuple[Vector, Vector]:
                 max_co[i] = world_corner[i]
 
     return min_co, max_co
-
-
-def get_object_bbox_center(obj: bpy.types.Object) -> Vector:
-    """获取物体的包围盒中心(AABB中心)
-
-    Args:
-        obj: Blender物体对象
-
-    Returns:
-        包围盒中心的3D坐标向量
-    """
-    if obj.type != 'MESH':
-        return Vector(obj.location)
-
-    min_co, max_co = get_world_bbox(obj)
-    return (min_co + max_co) * 0.5
-
-
-def get_bbox_size(obj: bpy.types.Object) -> Vector:
-    """获取包围盒尺寸
-
-    Args:
-        obj: Blender物体对象
-
-    Returns:
-        包围盒尺寸向量 (x, y, z)
-    """
-    if obj.type != 'MESH':
-        return Vector((0.0, 0.0, 0.0))
-
-    min_co, max_co = get_world_bbox(obj)
-    return max_co - min_co
-
-
-def calculate_bbox_volume(
-    obj: bpy.types.Object,
-    cache: Optional['ObjectMetadataCache'] = None
-) -> float:
-    """计算包围盒体积
-
-    Args:
-        obj: Blender物体对象
-        cache: 可选的元数据缓存,传入时直接复用缓存结果
-
-    Returns:
-        包围盒体积
-    """
-    if cache is not None:
-        return cache.get_volume(obj)
-
-    size = get_bbox_size(obj)
-    return size.x * size.y * size.z
-
-
-def calculate_distance(
-    obj1: bpy.types.Object,
-    obj2: bpy.types.Object,
-    cache: Optional['ObjectMetadataCache'] = None
-) -> float:
-    """计算两个物体之间的距离
-
-    Args:
-        obj1: 第一个物体
-        obj2: 第二个物体
-        cache: 可选的元数据缓存
-
-    Returns:
-        两物体中心点之间的距离
-    """
-    if cache:
-        center1 = cache.get_center(obj1)
-        center2 = cache.get_center(obj2)
-    else:
-        center1 = get_object_bbox_center(obj1)
-        center2 = get_object_bbox_center(obj2)
-
-    return (center1 - center2).length
 
 
 # ========== 原点处理函数 ==========

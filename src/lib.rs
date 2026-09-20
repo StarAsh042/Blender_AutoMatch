@@ -9,8 +9,7 @@
 //!   - 本内核不认识 bpy,只做纯计算,返回索引对(索引对应入参顺序);
 //!   - 计算过程经 `py.detach` 释放 GIL,避免阻塞 Blender 界面。
 //!
-//! 已迁入:简单配对算法(#20)、聚类划分与聚类配对(#21)。
-//! 体积算法随后续提交迁入。
+//! 三种配对算法均已迁入内核,Python 侧只保留薄壳与 bpy 交互。
 
 use pyo3::prelude::*;
 use std::collections::VecDeque;
@@ -86,6 +85,85 @@ fn find_pairs_simple_impl(
     pairs
 }
 
+/// 算法3:体积相似度配对(纯计算实现)
+///
+/// 在简单配对的基础上增加体积比例筛选与综合评分:
+/// `score = 距离分 + 体积相似度 * volume_weight`。
+/// 评分权重由 Python 侧传入,避免同一常量两处定义。
+#[allow(clippy::too_many_arguments)]
+fn find_pairs_volume_impl(
+    centers: &[[f64; 3]],
+    faces: &[i64],
+    volumes: &[f64],
+    max_distance: f64,
+    min_ratio: f64,
+    min_volume_ratio: f64,
+    max_volume_ratio: f64,
+    volume_weight: f64,
+) -> Vec<(usize, usize, f64)> {
+    // 按面数降序(稳定排序,与 Python sorted(reverse=True) 的稳定性一致)
+    let mut order: Vec<usize> = (0..centers.len()).collect();
+    order.sort_by(|&a, &b| faces[b].cmp(&faces[a]));
+
+    let mut used = vec![false; centers.len()];
+    let mut pairs = Vec::new();
+
+    for (i, &o1) in order.iter().enumerate() {
+        if used[o1] {
+            continue;
+        }
+        let faces1 = faces[o1];
+        let volume1 = volumes[o1];
+        let mut best_match: Option<usize> = None;
+        let mut best_distance = f64::INFINITY;
+        let mut best_score = 0.0;
+
+        for &o2 in &order[i + 1..] {
+            if used[o2] {
+                continue;
+            }
+            let faces2 = faces[o2];
+            if faces2 <= 0 {
+                continue;
+            }
+            // 检查面数比例
+            if min_ratio > 0.0 && (faces1 as f64 / faces2 as f64) < min_ratio {
+                continue;
+            }
+            // 检查体积比例
+            let volume2 = volumes[o2];
+            if volume2 == 0.0 {
+                continue;
+            }
+            let volume_ratio = volume1 / volume2;
+            if volume_ratio < min_volume_ratio || volume_ratio > max_volume_ratio {
+                continue;
+            }
+            let distance = center_distance(centers[o1], centers[o2]);
+            if distance > max_distance {
+                continue;
+            }
+            // 计算综合评分 (距离 + 体积相似度)
+            let distance_score = 1.0 / (1.0 + distance);
+            let volume_similarity = 1.0 - (volume_ratio - 1.0).abs();
+            let score = distance_score + volume_similarity * volume_weight;
+            if score > best_score {
+                best_match = Some(o2);
+                best_distance = distance;
+                best_score = score;
+            }
+        }
+
+        if let Some(o2) = best_match {
+            pairs.push((o1, o2, best_distance));
+            used[o1] = true;
+            used[o2] = true;
+        }
+    }
+
+    pairs
+}
+
 /// 聚类划分:按空间位置将物体分入不同聚类(BFS,纯计算实现)
 ///
 /// 返回聚类列表,每个聚类是索引列表;索引对应入参顺序。
@@ -142,6 +220,36 @@ fn cluster_objects(py: Python<'_>, centers: Vec<[f64; 3]>, radius: f64) -> Vec<V
     py.detach(|| cluster_objects_impl(&centers, radius))
 }
 
+/// Python 绑定:体积配对(计算期间释放 GIL)
+///
+/// 参数较多:薄壳只做数据搬运,调参项(含评分权重)全部由 Python 侧常量提供。
+#[allow(clippy::too_many_arguments)]
+#[pyfunction]
+fn find_pairs_volume(
+    py: Python<'_>,
+    centers: Vec<[f64; 3]>,
+    faces: Vec<i64>,
+    volumes: Vec<f64>,
+    max_distance: f64,
+    min_ratio: f64,
+    min_volume_ratio: f64,
+    max_volume_ratio: f64,
+    volume_weight: f64,
+) -> Vec<(usize, usize, f64)> {
+    py.detach(|| {
+        find_pairs_volume_impl(
+            &centers,
+            &faces,
+            &volumes,
+            max_distance,
+            min_ratio,
+            min_volume_ratio,
+            max_volume_ratio,
+            volume_weight,
+        )
+    })
+}
+
 /// 内核版本号(与 `CARGO_PKG_VERSION` 同步,供导入自检)
 #[pyfunction]
 fn kernel_version() -> String {
@@ -154,6 +262,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(kernel_version, m)?)?;
     m.add_function(wrap_pyfunction!(find_pairs_simple, m)?)?;
     m.add_function(wrap_pyfunction!(cluster_objects, m)?)?;
+    m.add_function(wrap_pyfunction!(find_pairs_volume, m)?)?;
     Ok(())
 }
 
@@ -206,5 +315,22 @@ mod tests {
         let centers = vec![[0.0, 0.0, 0.0], [3.0, 0.0, 0.0]];
         let clusters = cluster_objects_impl(&centers, 1.0);
         assert_eq!(clusters, vec![vec![0], vec![1]]);
+    }
+
+    #[test]
+    fn find_pairs_volume_respects_ratio_range() {
+        // 同位置,体积比 8/216 ≈ 0.037
+        let centers = vec![[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]];
+        let faces = vec![100, 6];
+        let volumes = vec![8.0, 216.0];
+        // 默认范围 (0.5, 2.0) 拒绝
+        assert!(
+            find_pairs_volume_impl(&centers, &faces, &volumes, 5.0, 0.0, 0.5, 2.0, 5.0).is_empty()
+        );
+        // 放宽到 (0.01, 0.1) 后配对,面数多者为 obj1
+        let pairs = find_pairs_volume_impl(&centers, &faces, &volumes, 5.0, 0.0, 0.01, 0.1, 5.0);
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0].0, 0);
+        assert_eq!(pairs[0].1, 1);
     }
 }

@@ -1,6 +1,6 @@
 [package]
 name = "blender-automatch-core"
-version = "2.1.0"
+version = "2.2.0"
 edition = "2021"
 # MSRV 按所依赖 PyO3 的 rust-version 实测填写(PyO3 0.30.1 → 1.85)
 rust-version = "1.85"

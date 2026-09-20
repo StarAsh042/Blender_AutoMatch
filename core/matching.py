@@ -7,7 +7,7 @@
     - CLUSTER: 聚类配对算法
     - VOLUME: 体积相似度配对算法
 
-简单算法与聚类划分由 Rust 内核(_core)实现,本模块为薄壳:
+三种算法均由 Rust 内核(_core)实现,本模块为薄壳:
 负责 bpy 交互与元数据提取,纯计算交还内核。
 """
 
@@ -21,11 +21,7 @@ from ..constants import (
     VOLUME_SCORE_WEIGHT,
 )
 from .cache import ObjectMetadataCache
-from ..utils import (
-    get_face_count,
-    calculate_distance,
-    calculate_bbox_volume,
-)
+from ..utils import get_face_count
 
 try:
     from .. import _core
@@ -217,11 +213,11 @@ def find_pairs_by_volume(
     use_cache: bool = True,
     cache: Optional[ObjectMetadataCache] = None
 ) -> List[Tuple[bpy.types.Object, bpy.types.Object, float]]:
-    """算法3:体积相似度配对算法
-    
-    考虑物体体积相似度的配对算法。
-    适用于需要考虑体积相似度的场景
-    
+    """算法3:体积相似度配对算法(Rust 内核实现)
+
+    薄壳职责:提取 (center, faces, volume) 平铺数据 → 调用内核
+    → 索引对映射回 bpy 对象。评分权重由 constants 传入内核。
+
     Args:
         objects: 要配对的物体列表
         max_distance: 最大配对距离阈值
@@ -240,72 +236,19 @@ def find_pairs_by_volume(
         cache = ObjectMetadataCache()
     
     face_counts = _collect_face_counts(objects)
-    volumes = {obj: calculate_bbox_volume(obj, cache) for obj in objects}
-    
-    # 按面数降序,保证每个物体只与面数不多于自己的物体配对
-    sorted_objects = sorted(objects, key=face_counts.__getitem__, reverse=True)
-    pairs = []
-    used_objects = set()
+    centers = [tuple(cache.get_center(obj)) for obj in objects]
+    faces = [face_counts[obj] for obj in objects]
+    volumes = [cache.get_volume(obj) for obj in objects]
     
     min_volume_ratio, max_volume_ratio = volume_ratio_range
+    index_pairs = _core.find_pairs_volume(
+        centers, faces, volumes,
+        max_distance, min_ratio,
+        min_volume_ratio, max_volume_ratio,
+        VOLUME_SCORE_WEIGHT,
+    )
     
-    for i, obj1 in enumerate(sorted_objects):
-        if obj1 in used_objects:
-            continue
-        
-        faces1 = face_counts[obj1]
-        volume1 = volumes[obj1]
-        best_match = None
-        best_distance = float('inf')
-        best_score = 0.0
-        
-        for j in range(i + 1, len(sorted_objects)):
-            obj2 = sorted_objects[j]
-            if obj2 in used_objects:
-                continue
-            
-            faces2 = face_counts[obj2]
-            if faces2 <= 0:
-                continue
-            
-            # 检查面数比例
-            if min_ratio > 0 and faces1 / faces2 < min_ratio:
-                continue
-            
-            # 检查体积比例
-            volume2 = volumes[obj2]
-            if volume2 == 0:
-                continue
-            
-            volume_ratio = volume1 / volume2
-            if volume_ratio < min_volume_ratio or volume_ratio > max_volume_ratio:
-                continue
-            
-            # 计算距离并检查阈值
-            distance = calculate_distance(obj1, obj2, cache)
-            if distance > max_distance:
-                continue
-            
-            # 计算综合评分 (距离 + 体积相似度)
-            distance_score = 1.0 / (1.0 + distance)
-            
-            # 体积相似度评分 (比例越接近1越好)
-            volume_similarity = 1.0 - abs(volume_ratio - 1.0)
-            volume_score = volume_similarity * VOLUME_SCORE_WEIGHT
-            
-            score = distance_score + volume_score
-            
-            if score > best_score:
-                best_match = obj2
-                best_distance = distance
-                best_score = score
-        
-        if best_match is not None:
-            pairs.append((obj1, best_match, best_distance))
-            used_objects.add(obj1)
-            used_objects.add(best_match)
-    
-    return pairs
+    return [(objects[i], objects[j], score) for i, j, score in index_pairs]
 
 
 def cluster_objects(
