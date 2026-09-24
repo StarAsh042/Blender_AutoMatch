@@ -2,7 +2,7 @@
 """常量定义模块"""
 
 # ========== 版本信息 ==========
-__version__ = "2.2.0"
+__version__ = "2.3.0"
 __blender_min_version__ = (3, 4, 0)
 
 # ========== 默认配置 ==========
@@ -46,6 +46,14 @@ ERROR_MESSAGES = {
     "no_mesh_objects": "请先选中要处理的网格物体",
     "insufficient_objects": "需要至少选中2个网格物体",
     "no_pairs_found": "没有找到合适的配对。请尝试调整参数或更换算法。",
+    "name_exists": "重命名失败，以下名称已被占用：",
     "origin_fix_failed": "设置原点失败: {error}",
     "origin_fix_success": "已为{count}个物体设置原点到包围盒中心"
+}
+
+# ========== 成功消息 ==========
+SUCCESS_MESSAGES = {
+    "processing_complete": "处理完成！耗时: {time:.2f}秒",
+    "pairs_created": "成功配对: {count}对，重命名: {renamed}个物体",
+    "objects_moved": "物体已移动到 '{collection}' 集合"
 }

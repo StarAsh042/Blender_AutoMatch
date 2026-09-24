@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "blender-automatch-core"
-version = "2.2.0"
+version = "2.3.0"
 description = "Blender 高低模配对插件 Rust 内核(_core)"
 requires-python = ">=3.9"
 license = { text = "MIT" }

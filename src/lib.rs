@@ -50,6 +50,11 @@ fn find_pairs_simple_impl(
             continue;
         }
         let faces1 = faces[o1];
+        // 面数为0的物体不参与配对(薄壳已过滤,内核作为边界防线:
+        // 避免0面物体经直接调用内核时进入比例计算)
+        if faces1 <= 0 {
+            continue;
+        }
         let mut best_match: Option<usize> = None;
         let mut best_distance = f64::INFINITY;
 
@@ -114,6 +119,10 @@ fn find_pairs_volume_impl(
         }
         let faces1 = faces[o1];
         let volume1 = volumes[o1];
+        // 面数为0的物体不参与配对(同简单算法的边界防线)
+        if faces1 <= 0 {
+            continue;
+        }
         let mut best_match: Option<usize> = None;
         let mut best_distance = f64::INFINITY;
         let mut best_score = 0.0;
@@ -299,6 +308,16 @@ mod tests {
     }
 
     #[test]
+    fn find_pairs_simple_skips_zero_face_objects() {
+        // 0面物体不参与配对:既不做"高模"也不做候选
+        let centers = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]];
+        let faces = vec![0, 4];
+        assert!(find_pairs_simple_impl(&centers, &faces, 5.0, 0.0).is_empty());
+        // 仅有0面物体时同样无配对(且不 panic)
+        assert!(find_pairs_simple_impl(&centers, &[0, 0], 5.0, 0.0).is_empty());
+    }
+
+    #[test]
     fn cluster_objects_splits_distant_groups() {
         let centers = vec![
             [0.0, 0.0, 0.0],
@@ -332,5 +351,16 @@ mod tests {
         assert_eq!(pairs.len(), 1);
         assert_eq!(pairs[0].0, 0);
         assert_eq!(pairs[0].1, 1);
+    }
+
+    #[test]
+    fn find_pairs_volume_skips_zero_face_objects() {
+        // 0面物体同样不进入体积配对(边界防线,比例计算不会出现 0/0)
+        let centers = vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]];
+        let faces = vec![0, 4];
+        let volumes = vec![1.0, 1.0];
+        assert!(
+            find_pairs_volume_impl(&centers, &faces, &volumes, 5.0, 0.0, 0.5, 2.0, 5.0).is_empty()
+        );
     }
 }

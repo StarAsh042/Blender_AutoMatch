@@ -216,6 +216,19 @@ class TestDOperatorPair(unittest.TestCase):
         self.assertIn(high.name, baking.objects)
         self.assertIn(low.name, baking.objects)
 
+    def test_name_conflict_cancels_without_changes(self):
+        high, low = self._make_pair_objects()
+        make_mesh("BakePoly_001_High", (100, 100, 0))  # 冲突名称占用者
+        select_only([high, low])
+        # 操作符 report({'ERROR'}) 会让 bpy.ops 调用抛 RuntimeError
+        with self.assertRaises(RuntimeError):
+            bpy.ops.object.pair_rename()
+        self.assertEqual(high.name, "MyHigh")
+        self.assertEqual(low.name, "MyLow")
+        self.assertNotIn('original_name', high)
+        self.assertNotIn('original_name', low)
+        self.assertIsNone(bpy.data.collections.get("Baking"))
+
     def test_origin_fixed_to_bbox_center_on_success(self):
         high, low = self._make_pair_objects(shift_verts_x=2.0)
         select_only([high, low])

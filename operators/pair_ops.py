@@ -24,6 +24,7 @@ from ..utils import (
 from ..core import find_pairs
 from ..constants import (
     ERROR_MESSAGES,
+    SUCCESS_MESSAGES,
     BAKING_COLLECTION_NAME,
 )
 
@@ -151,8 +152,19 @@ class OBJECT_OT_PairRename(bpy.types.Operator):
             len(pairs)
         )
 
-        # 重命名物体
-        renamed_count = self._rename_pairs(pairs, prefixes)
+        # 重命名物体(先统一校验目标名称,全部通过后才执行改名)
+        renamed_count, rename_details, rename_errors = self._rename_pairs(pairs, prefixes)
+
+        # 如果有重命名错误,报告并返回(此时未修改任何物体名称)
+        if rename_errors:
+            settings.last_operation = "重命名失败:名称冲突"
+            error_message = ERROR_MESSAGES["name_exists"]
+            for error in rename_errors[:5]:
+                error_message += f"  {error}\n"
+            if len(rename_errors) > 5:
+                error_message += f"  ... 等{len(rename_errors)}项\n"
+            self.report({'ERROR'}, error_message)
+            return {'CANCELLED'}
 
         # 创建或获取Baking集合
         baking_collection = None
@@ -168,54 +180,202 @@ class OBJECT_OT_PairRename(bpy.types.Operator):
             # 移动到Baking集合
             move_objects_to_collection(paired_objects, baking_collection)
 
-        processing_time = time.time() - start_time
-        report_message = (
-            f"成功配对 {len(pairs)} 对,重命名 {renamed_count} 个物体,"
-            f"耗时 {processing_time:.2f}秒"
+        # 统计结果
+        all_objects_set = set(mesh_objects)
+        paired_objects_set = set()
+        for obj1, obj2, _ in pairs:
+            paired_objects_set.add(obj1)
+            paired_objects_set.add(obj2)
+
+        unpaired_objects = all_objects_set - paired_objects_set
+
+        end_time = time.time()
+        processing_time = end_time - start_time
+
+        # 生成结果报告
+        self._report_results(
+            processing_time,
+            settings.pair_algorithm,
+            max_number,
+            len(pairs),
+            renamed_count,
+            prefixes,
+            baking_collection,
+            rename_details,
+            unpaired_objects
         )
-        if baking_collection:
-            report_message += f",物体已移动到 {BAKING_COLLECTION_NAME} 集合"
-        self.report({'INFO'}, report_message)
-        settings.last_operation = (
-            f"成功配对 {len(pairs)} 对 ({renamed_count}个物体), "
-            f"耗时 {processing_time:.2f}s"
-        )
+
+        # 更新最后操作状态
+        pairs_count = len(pairs)
+        settings.last_operation = f"成功配对 {pairs_count} 对 ({renamed_count}个物体), 耗时 {processing_time:.2f}s"
+
         return {'FINISHED'}
 
     def _rename_pairs(
         self,
         pairs: List[Tuple[bpy.types.Object, bpy.types.Object, float]],
         prefixes: List[str]
-    ) -> int:
+    ) -> Tuple[int, List[Dict], List[str]]:
         """执行重命名操作
+
+        分两阶段执行:先校验全部目标名称,全部通过后再统一改名,
+        避免出现部分物体已改名、部分未改的半完成状态
 
         Args:
             pairs: 配对列表
             prefixes: 前缀列表
 
         Returns:
-            重命名物体数量
+            Tuple[重命名数量, 重命名详情列表, 错误消息列表]
         """
-        count = 0
+        # 本批次中会被改名的物体,它们当前占用的名称可以被其他物体接管
+        renaming_objects = set()
+        for obj1, obj2, _ in pairs:
+            renaming_objects.add(obj1)
+            renaming_objects.add(obj2)
+
+        # 阶段1:校验目标名称(要求全局唯一)
+        planned = []
+        rename_errors = []
+        reserved_names = set()
+
         for idx, (obj1, obj2, score) in enumerate(pairs):
             high_obj, low_obj = identify_high_low(obj1, obj2)
             prefix_str = prefixes[idx]
-            high_name, low_name = generate_pair_names(prefix_str)
+            new_high_name, new_low_name = generate_pair_names(prefix_str)
+
+            for new_name in (new_high_name, new_low_name):
+                if new_name in reserved_names:
+                    rename_errors.append(f"前缀 {prefix_str} 生成的名称重复: {new_name}")
+                    continue
+
+                reserved_names.add(new_name)
+                holder = bpy.data.objects.get(new_name)
+                if holder is not None and holder not in renaming_objects:
+                    rename_errors.append(f"名称已被占用: {new_name}")
+
+            planned.append({
+                "prefix": prefix_str,
+                "score": score,
+                "high_obj": high_obj,
+                "low_obj": low_obj,
+                "high_faces": get_face_count(high_obj),
+                "low_faces": get_face_count(low_obj),
+                "high_original": high_obj.name,
+                "low_original": low_obj.name,
+                "high_new": new_high_name,
+                "low_new": new_low_name,
+            })
+
+        if rename_errors:
+            return 0, [], rename_errors
+
+        # 阶段2:先统一改为临时名称,再改为目标名称。
+        # 否则批内物体互相占用目标名称时,Blender 会静默追加 .001 后缀
+        for idx, item in enumerate(planned):
+            item["high_obj"].name = f"__pair_tmp_{idx}_High"
+            item["low_obj"].name = f"__pair_tmp_{idx}_Low"
+
+        rename_details = []
+        for item in planned:
+            high_obj = item["high_obj"]
+            low_obj = item["low_obj"]
 
             # 保存原始名称到自定义属性(用于撤销功能)
             # 如果已经存在original_name(说明已经配对过),保留最初的原始名称
             if 'original_name' not in high_obj:
-                high_obj['original_name'] = high_obj.name
+                high_obj['original_name'] = item["high_original"]
             if 'original_name' not in low_obj:
-                low_obj['original_name'] = low_obj.name
-            high_obj['pairing_prefix'] = prefix_str
-            low_obj['pairing_prefix'] = prefix_str
+                low_obj['original_name'] = item["low_original"]
+            high_obj['pairing_prefix'] = item["prefix"]
+            low_obj['pairing_prefix'] = item["prefix"]
 
-            high_obj.name = high_name
-            low_obj.name = low_name
-            count += 2
+            high_obj.name = item["high_new"]
+            low_obj.name = item["low_new"]
 
-        return count
+            rename_details.append({
+                "prefix": item["prefix"],
+                "score": item["score"],
+                "high_faces": item["high_faces"],
+                "low_faces": item["low_faces"],
+                "high_original": item["high_original"],
+                "low_original": item["low_original"],
+                "high_new": item["high_new"],
+                "low_new": item["low_new"]
+            })
+
+        return len(planned) * 2, rename_details, rename_errors
+
+    def _report_results(
+        self,
+        processing_time: float,
+        algorithm: str,
+        max_number: int,
+        pairs_count: int,
+        renamed_count: int,
+        prefixes: List[str],
+        baking_collection: bpy.types.Collection,
+        rename_details: List[Dict],
+        unpaired_objects: Set[bpy.types.Object]
+    ) -> None:
+        """生成并显示结果报告
+
+        Args:
+            processing_time: 处理耗时(秒)
+            algorithm: 使用的算法
+            max_number: Baking集合最大序号
+            pairs_count: 配对数量
+            renamed_count: 重命名数量
+            prefixes: 使用的前缀列表
+            baking_collection: Baking集合对象
+            rename_details: 重命名详情列表
+            unpaired_objects: 未配对物体集合
+        """
+        # 基本信息
+        result_message = SUCCESS_MESSAGES["processing_complete"].format(time=processing_time) + "\n"
+        result_message += f"算法: {algorithm}\n"
+        result_message += f"Baking集合中最大序号: {max_number}\n"
+
+        # 配对信息
+        result_message += SUCCESS_MESSAGES["pairs_created"].format(
+            count=pairs_count,
+            renamed=renamed_count
+        ) + "\n"
+
+        # 前缀信息
+        if prefixes:
+            prefix_list = ', '.join(prefixes[:3])
+            if len(prefixes) > 3:
+                prefix_list += f" 等{len(prefixes)}个"
+            result_message += f"使用前缀: {prefix_list}\n"
+
+        # 集合信息
+        if baking_collection:
+            msg = SUCCESS_MESSAGES["objects_moved"].format(collection=baking_collection.name)
+            result_message += msg + "\n"
+
+        # 配对详情
+        if rename_details:
+            result_message += "\n配对详情:\n"
+            for detail in rename_details[:3]:
+                result_message += (
+                    f"  {detail['prefix']}: "
+                    f"高模({detail['high_faces']}面→{detail['high_new']}) "
+                    f"低模({detail['low_faces']}面→{detail['low_new']})\n"
+                )
+            if len(rename_details) > 3:
+                result_message += f"  ... 等{len(rename_details)}对\n"
+
+        # 未配对物体
+        if unpaired_objects:
+            result_message += f"\n未配对物体: {len(unpaired_objects)}个\n"
+            for obj in list(unpaired_objects)[:3]:
+                faces = get_face_count(obj)
+                result_message += f"  {obj.name} ({faces}面)\n"
+            if len(unpaired_objects) > 3:
+                result_message += f"  ... 等{len(unpaired_objects)}个\n"
+
+        self.report({'INFO'}, result_message)
 
 
 class OBJECT_OT_UnpairSelected(bpy.types.Operator):
