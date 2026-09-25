@@ -303,7 +303,7 @@ A: 是的,界面完全支持中文显示
 
 ## 许可证
 
-MIT License
+[MIT License](LICENSE)
 
 ## 联系方式
 
