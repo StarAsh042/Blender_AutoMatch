@@ -10,7 +10,7 @@
     - 自动校正物体原点
     - 集合管理(移动到Baking集合)
 
-版本:2.3.0
+版本:2.3.1
 兼容性:Blender 3.4+
 作者:StarAsh042
 许可证:MIT License
@@ -19,7 +19,7 @@
 bl_info = {
     "name": "高低模匹配",
     "author": "StarAsh042",
-    "version": (2, 3, 0),
+    "version": (2, 3, 1),
     "blender": (3, 4, 0),
     "location": "3D视图 > 侧边栏 > 高低模匹配",
     "description": "智能配对并重命名高低模,支持多种算法和自动原点校正",
@@ -103,14 +103,6 @@ __all__ = [
 ]
 
 
-# 菜单项函数
-def menu_func(self, context: bpy.types.Context) -> None:
-    """在3D视口对象菜单中添加菜单项"""
-    layout = self.layout
-    layout.separator()
-    layout.operator("object.pair_rename", icon='GROUP_VERTEX')
-
-
 def register() -> None:
     """注册插件
 
@@ -121,8 +113,21 @@ def register() -> None:
     print("=" * 60)
 
     # 注册所有类
+    registered_classes = []
     for cls in classes:
-        bpy.utils.register_class(cls)
+        try:
+            bpy.utils.register_class(cls)
+            registered_classes.append(cls)
+        except Exception as e:
+            print(f"✗ 注册类 {cls.__name__} 失败: {e}")
+            # 回滚已注册的类
+            for registered_cls in reversed(registered_classes):
+                try:
+                    bpy.utils.unregister_class(registered_cls)
+                except Exception:
+                    pass
+            return
+
     print(f"✓ 已注册 {len(classes)} 个类")
 
     # 添加 Scene 属性
@@ -132,10 +137,16 @@ def register() -> None:
     print("✓ Scene属性注册成功")
 
     # 添加到菜单
-    bpy.types.VIEW3D_MT_object.append(menu_func)
-    print("✓ 菜单项添加成功")
+    try:
+        bpy.types.VIEW3D_MT_object.append(menu_func)
+        print("✓ 菜单项添加成功")
+    except Exception as e:
+        print(f"✗ 菜单添加失败: {e}")
 
+    print("=" * 60)
     print(f"✓ 插件注册成功!版本: {__version__}")
+    print("=" * 60)
+    print()
 
 
 def unregister() -> None:
@@ -148,8 +159,11 @@ def unregister() -> None:
     print("=" * 60)
 
     # 从菜单中移除
-    bpy.types.VIEW3D_MT_object.remove(menu_func)
-    print("✓ 菜单项移除成功")
+    try:
+        bpy.types.VIEW3D_MT_object.remove(menu_func)
+        print("✓ 菜单项移除成功")
+    except Exception as e:
+        print(f"✗ 菜单移除失败: {e}")
 
     # 删除 Scene 属性
     if hasattr(bpy.types.Scene, 'pair_rename_tool'):
@@ -158,13 +172,30 @@ def unregister() -> None:
 
     # 反向注销所有类
     for cls in reversed(classes):
-        bpy.utils.unregister_class(cls)
+        try:
+            bpy.utils.unregister_class(cls)
+        except Exception as e:
+            print(f"✗ 注销类 {cls.__name__} 失败: {e}")
+
     print(f"✓ 已注销 {len(classes)} 个类")
 
     print("=" * 60)
     print("✓ 插件注销完成")
     print("=" * 60)
     print()
+
+
+# 菜单项函数
+def menu_func(self, context: bpy.types.Context) -> None:
+    """在3D视口对象菜单中添加菜单项
+
+    Args:
+        self: 菜单对象
+        context: Blender上下文
+    """
+    layout = self.layout
+    layout.separator()
+    layout.operator("object.pair_rename", icon='GROUP_VERTEX')
 
 
 # ========== 命令行执行支持 ==========

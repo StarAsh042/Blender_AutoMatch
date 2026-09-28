@@ -229,6 +229,17 @@ class TestDOperatorPair(unittest.TestCase):
         self.assertNotIn('original_name', low)
         self.assertIsNone(bpy.data.collections.get("Baking"))
 
+    def test_origin_not_touched_when_conflict_cancels(self):
+        # 回归测试:配对失败返回CANCELLED时不留下已改原点的半完成状态
+        high, low = self._make_pair_objects(shift_verts_x=2.0)
+        self.assertEqual(high.location.x, 0.0)
+        make_mesh("BakePoly_001_High", (100, 100, 0))
+        select_only([high, low])
+        with self.assertRaises(RuntimeError):
+            bpy.ops.object.pair_rename()
+        self.assertAlmostEqual(high.location.x, 0.0, places=5)
+        self.assertAlmostEqual(low.location.x, 0.0, places=5)
+
     def test_origin_fixed_to_bbox_center_on_success(self):
         high, low = self._make_pair_objects(shift_verts_x=2.0)
         select_only([high, low])
@@ -263,6 +274,43 @@ class TestEOperatorUnpair(unittest.TestCase):
         self.assertNotIn('pairing_prefix', low)
 
 
+    def test_unpair_with_self_held_original_name(self):
+        # 回归测试:物体自身占用了原名称时不应被误判为冲突
+        high, low = self._pair_simple()
+        high.name = "MyHigh"  # 用户手动改回原名称
+        select_only([high, low])
+        result = bpy.ops.object.unpair_selected()
+        self.assertEqual(result, {'FINISHED'})
+        self.assertEqual(high.name, "MyHigh")
+        self.assertNotIn('original_name', high)
+
+    def test_unpair_skips_when_name_taken_by_other(self):
+        high, low = self._pair_simple()
+        make_mesh("MyHigh", (100, 100, 0))  # 原名称被其他物体占用
+        select_only([high, low])
+        result = bpy.ops.object.unpair_selected()
+        self.assertEqual(result, {'FINISHED'})  # low 仍可恢复
+        self.assertEqual(high.name, "BakePoly_001_High")  # high 被跳过
+        self.assertEqual(low.name, "MyLow")
+
+    def test_unpair_without_record_cancels(self):
+        obj = make_mesh("Plain", (0, 0, 0))
+        select_only([obj])
+        self.assertEqual(bpy.ops.object.unpair_selected(), {'CANCELLED'})
+
+
+class TestZRegisterCycle(unittest.TestCase):
+    """注销/再注册循环(放在最后执行)"""
+
+    def test_disable_then_enable(self):
+        import addon_utils
+        addon_utils.disable("Blender_AutoMatch")
+        self.assertFalse(hasattr(bpy.types.Scene, 'pair_rename_tool'))
+        mod = addon_utils.enable("Blender_AutoMatch", default_set=False)
+        self.assertIsNotNone(mod)
+        self.assertTrue(hasattr(bpy.types.Scene, 'pair_rename_tool'))
+
+
 # ========== 入口 ==========
 def build_suite():
     """按声明顺序构建测试套件"""
@@ -274,6 +322,7 @@ def build_suite():
         TestCUtils,
         TestDOperatorPair,
         TestEOperatorUnpair,
+        TestZRegisterCycle,
     ):
         suite.addTests(loader.loadTestsFromTestCase(case))
     return suite
