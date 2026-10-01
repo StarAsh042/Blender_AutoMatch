@@ -299,6 +299,21 @@ class TestEOperatorUnpair(unittest.TestCase):
         self.assertEqual(bpy.ops.object.unpair_selected(), {'CANCELLED'})
 
 
+class TestFSettingsClamp(unittest.TestCase):
+    """设置项联动钳制"""
+
+    def test_volume_ratio_clamp(self):
+        settings = get_settings()
+        settings.pair_volume_min_ratio = 3.0
+        self.assertGreaterEqual(settings.pair_volume_max_ratio,
+                                settings.pair_volume_min_ratio)
+        settings.pair_volume_max_ratio = 1.5
+        self.assertLessEqual(settings.pair_volume_min_ratio,
+                             settings.pair_volume_max_ratio)
+        # 还原默认,避免影响其他测试
+        bpy.ops.object.pair_rename_reset()
+
+
 class TestZRegisterCycle(unittest.TestCase):
     """注销/再注册循环(放在最后执行)"""
 
@@ -322,6 +337,7 @@ def build_suite():
         TestCUtils,
         TestDOperatorPair,
         TestEOperatorUnpair,
+        TestFSettingsClamp,
         TestZRegisterCycle,
     ):
         suite.addTests(loader.loadTestsFromTestCase(case))
