@@ -94,19 +94,6 @@ class OBJECT_OT_PairRename(bpy.types.Operator):
             )
             return {'CANCELLED'}
 
-        # 自动设置原点
-        if settings.pair_fix_origins:
-            try:
-                success_count = process_origins_to_bbox_center(mesh_objects)
-                if success_count > 0:
-                    msg = ERROR_MESSAGES["origin_fix_success"].format(count=success_count)
-                    self.report({'INFO'}, msg)
-            except Exception as e:
-                self.report(
-                    {'WARNING'},
-                    f"设置原点时发生非关键错误: {str(e)}，继续执行配对"
-                )
-
         # 执行配对算法
         try:
             pairs = find_pairs(
@@ -177,6 +164,21 @@ class OBJECT_OT_PairRename(bpy.types.Operator):
 
             # 移动到Baking集合
             move_objects_to_collection(paired_objects, baking_collection)
+
+        # 自动设置原点。
+        # 放在重命名成功之后执行:配对使用世界空间包围盒,与原点无关,
+        # 而提前执行会在配对失败(返回CANCELLED,无撤销步)时留下已改原点的半完成状态
+        if settings.pair_fix_origins:
+            try:
+                success_count = process_origins_to_bbox_center(mesh_objects)
+                if success_count > 0:
+                    msg = ERROR_MESSAGES["origin_fix_success"].format(count=success_count)
+                    self.report({'INFO'}, msg)
+            except Exception as e:
+                self.report(
+                    {'WARNING'},
+                    f"设置原点时发生非关键错误: {str(e)}，配对结果不受影响"
+                )
 
         # 统计结果
         all_objects_set = set(mesh_objects)
@@ -399,23 +401,25 @@ class OBJECT_OT_UnpairSelected(bpy.types.Operator):
             return {'CANCELLED'}
 
         restored_count = 0
-        skipped_count = 0
+        no_record_count = 0
+        conflict_count = 0
 
         for obj in selected_objects:
             # 检查是否有原始名称记录
             if 'original_name' not in obj:
-                skipped_count += 1
+                no_record_count += 1
                 continue
 
             original_name = obj['original_name']
 
-            # 检查名称是否已被占用
-            if original_name in bpy.data.objects:
+            # 检查名称是否已被其他物体占用(物体自身占用不算冲突)
+            holder = bpy.data.objects.get(original_name)
+            if holder is not None and holder != obj:
                 self.report(
                     {'WARNING'},
                     f"无法恢复 '{obj.name}' 的名称为 '{original_name}': 名称已被占用"
                 )
-                skipped_count += 1
+                conflict_count += 1
                 continue
 
             # 恢复原始名称
@@ -436,14 +440,19 @@ class OBJECT_OT_UnpairSelected(bpy.types.Operator):
                 f"成功恢复 {restored_count} 个物体的原始名称"
             )
 
-        if skipped_count > 0:
+        if conflict_count > 0:
             self.report(
                 {'WARNING'},
-                f"跳过 {skipped_count} 个物体(无原始名称记录或名称冲突)"
+                f"跳过 {conflict_count} 个物体(原始名称已被其他物体占用)"
             )
 
-        if restored_count == 0 and skipped_count == 0:
-            self.report({'WARNING'}, "未找到可撤销的物体")
+        if no_record_count > 0 and restored_count == 0 and conflict_count == 0:
+            self.report({'WARNING'}, f"未找到可撤销的物体({no_record_count}个无配对记录)")
             return {'CANCELLED'}
+
+        context.scene.pair_rename_tool.last_operation = (
+            f"撤销配对: 恢复 {restored_count} 个, "
+            f"跳过 {conflict_count + no_record_count} 个"
+        )
 
         return {'FINISHED'}

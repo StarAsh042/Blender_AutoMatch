@@ -23,6 +23,18 @@ from ..constants import (
 )
 
 
+def _update_volume_min_ratio(self, context: bpy.types.Context) -> None:
+    """最小体积比变化时,带动最大体积比,保持 min <= max"""
+    if self.pair_volume_min_ratio > self.pair_volume_max_ratio:
+        self.pair_volume_max_ratio = self.pair_volume_min_ratio
+
+
+def _update_volume_max_ratio(self, context: bpy.types.Context) -> None:
+    """最大体积比变化时,带动最小体积比,保持 min <= max"""
+    if self.pair_volume_max_ratio < self.pair_volume_min_ratio:
+        self.pair_volume_min_ratio = self.pair_volume_max_ratio
+
+
 class PairRenameSettings(bpy.types.PropertyGroup):
     """
     插件设置 - 存储插件的所有配置参数
@@ -97,16 +109,18 @@ class PairRenameSettings(bpy.types.PropertyGroup):
         default=DEFAULT_VOLUME_MIN_RATIO,
         min=0.1,
         max=5.0,
-        step=0.1
+        step=0.1,
+        update=_update_volume_min_ratio
     )
-    
+
     pair_volume_max_ratio: bpy.props.FloatProperty(
         name="最大体积比",
         description="体积算法的最大体积比例(仅体积算法有效)",
         default=DEFAULT_VOLUME_MAX_RATIO,
         min=0.5,
         max=10.0,
-        step=0.1
+        step=0.1,
+        update=_update_volume_max_ratio
     )
     
     # ===== 命名设置 =====

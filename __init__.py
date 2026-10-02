@@ -10,7 +10,7 @@
     - 自动校正物体原点
     - 集合管理(移动到Baking集合)
 
-版本:2.3.1
+版本:2.3.2
 兼容性:Blender 3.0+
 作者:StarAsh042
 许可证:MIT License
@@ -19,7 +19,7 @@
 bl_info = {
     "name": "高低模匹配",
     "author": "StarAsh042",
-    "version": (2, 3, 1),
+    "version": (2, 3, 2),
     "blender": (3, 0, 0),
     "location": "3D视图 > 侧边栏 > 高低模匹配",
     "description": "智能配对并重命名高低模,支持多种算法和自动原点校正",

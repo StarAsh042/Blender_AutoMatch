@@ -206,6 +206,13 @@ pairs = [
 
 ## 版本历史
 
+### v2.3.2
+- 🐛 修复因名称冲突等原因配对失败时,物体原点已被修改却没有撤销步的半完成状态;原点校正移至配对重命名成功之后执行(配对使用世界空间包围盒,与原点无关,配对结果不变)
+- 🐛 修复撤销配对时,物体自身占用原名称会被误判为名称冲突而跳过的问题
+- 🐛 修复体积算法参数允许"最小体积比 > 最大体积比"的无效配置,现在两者自动联动钳制
+- ✨ 撤销配对后更新面板状态信息,并区分"无配对记录"与"名称被占用"两种跳过原因
+- ✅ 新增 Blender 无头模式自动化测试套件(`tests/run_tests.py`,26个用例),覆盖三种配对算法、重命名/撤销流程、名称冲突回滚及本次全部修复的回归测试
+
 ### v2.3.1
 - 🐛 修复体积算法因参数传递错误而必然失败的问题
 - 🐛 修复物体面数为0时面数比例计算除零崩溃
@@ -254,18 +261,30 @@ Blender_AutoMatch/
 │   └── settings_ops.py    # 参数重置
 ├── properties/             # 属性定义
 │   └── settings.py        # PairRenameSettings
-└── ui/                     # UI面板
-    ├── main_panel.py
-    ├── main_action_panel.py
-    ├── algorithm_panel.py
-    ├── common_params_panel.py
-    ├── cluster_params_panel.py
-    ├── volume_params_panel.py
-    ├── naming_params_panel.py
-    ├── collection_params_panel.py
-    ├── statistics_panel.py
-    └── usage_panel.py
+├── ui/                     # UI面板
+│   ├── main_panel.py
+│   ├── main_action_panel.py
+│   ├── algorithm_panel.py
+│   ├── common_params_panel.py
+│   ├── cluster_params_panel.py
+│   ├── volume_params_panel.py
+│   ├── naming_params_panel.py
+│   ├── collection_params_panel.py
+│   ├── statistics_panel.py
+│   └── usage_panel.py
+└── tests/
+    └── run_tests.py       # 无头模式自动化测试
 ```
+
+### 运行测试
+
+需要本地安装 Blender 3.0+,在项目根目录执行(替换为你的 Blender 路径):
+
+```bash
+"<Blender安装目录>/blender.exe" --background --factory-startup --python tests/run_tests.py
+```
+
+退出码 0 表示全部通过。测试在无头模式下加载并启用插件,覆盖三种配对算法核心逻辑、重命名/撤销流程、名称冲突回滚、原点校正时序与参数钳制等场景。
 
 
 ## 常见问题
