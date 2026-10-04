@@ -51,6 +51,7 @@ def make_mesh(name, location, subdivisions=0, size=2.0, scale=None, shift_verts_
     if active is not None and active.mode != 'OBJECT':
         bpy.ops.object.mode_set(mode='OBJECT')
     if subdivisions > 0:
+        # Blender 3.4 的 primitive_cube_add 没有 subdivisions 参数,用 UV 球生成高面数网格
         bpy.ops.mesh.primitive_uv_sphere_add(
             radius=size / 2, location=location,
             segments=4 * (subdivisions + 1), ring_count=2 * (subdivisions + 1))
@@ -93,10 +94,8 @@ class TestARegistration(unittest.TestCase):
         # bpy.types 中操作符按 bl_idname 的 OT 形式注册
         for type_name in (
             'OBJECT_OT_pair_rename',
+            'OBJECT_OT_unpair_selected',
             'OBJECT_OT_pair_rename_reset',
-            'OBJECT_OT_set_pair_algorithm_simple',
-            'OBJECT_OT_set_pair_algorithm_cluster',
-            'OBJECT_OT_set_pair_algorithm_volume',
         ):
             self.assertTrue(hasattr(bpy.types, type_name), f"missing {type_name}")
 
@@ -106,7 +105,7 @@ class TestARegistration(unittest.TestCase):
 
 
 class TestBFindingPairs(unittest.TestCase):
-    """配对算法核心逻辑"""
+    """三种配对算法的核心逻辑"""
 
     def setUp(self):
         clean_scene()
@@ -124,6 +123,15 @@ class TestBFindingPairs(unittest.TestCase):
         low = make_mesh("Low", (100, 0, 0))
         pairs = find_pairs(ALGORITHM_SIMPLE, [high, low], max_distance=5.0)
         self.assertEqual(pairs, [])
+
+    def test_simple_respects_min_ratio(self):
+        # 面数相同的两个物体,比例为1
+        a = make_mesh("A", (0, 0, 0))
+        b = make_mesh("B", (0.5, 0, 0))
+        self.assertEqual(
+            find_pairs(ALGORITHM_SIMPLE, [a, b], max_distance=5.0, min_ratio=2.0), [])
+        self.assertEqual(
+            len(find_pairs(ALGORITHM_SIMPLE, [a, b], max_distance=5.0, min_ratio=1.0)), 1)
 
     def test_cluster_splits_distant_groups(self):
         high_a = make_mesh("HighA", (-50, 0, 0), subdivisions=3)
@@ -156,6 +164,12 @@ class TestBFindingPairs(unittest.TestCase):
         pairs = find_pairs(ALGORITHM_VOLUME, [high, low], max_distance=5.0,
                            volume_ratio_range=(0.01, 0.1))
         self.assertEqual(len(pairs), 1)
+
+    def test_invalid_algorithm_raises(self):
+        a = make_mesh("A", (0, 0, 0))
+        b = make_mesh("B", (0.5, 0, 0))
+        with self.assertRaises(RuntimeError):
+            find_pairs("NOT_EXIST", [a, b], max_distance=5.0)
 
     def test_fewer_than_two_objects(self):
         a = make_mesh("A", (0, 0, 0))
@@ -248,6 +262,23 @@ class TestDOperatorPair(unittest.TestCase):
         self.assertAlmostEqual(high.location.x, 2.0, places=4)
         self.assertAlmostEqual(low.location.x, 2.0, places=4)
 
+    def test_repair_preserves_first_original_name(self):
+        high, low = self._make_pair_objects()
+        select_only([high, low])
+        self.assertEqual(bpy.ops.object.pair_rename(), {'FINISHED'})
+        self.assertEqual(high.name, "BakePoly_001_High")
+        select_only([high, low])
+        self.assertEqual(bpy.ops.object.pair_rename(), {'FINISHED'})
+        self.assertEqual(high.name, "BakePoly_002_High")
+        self.assertEqual(low.name, "BakePoly_002_Low")
+        # 二次配对保留最初的原始名称
+        self.assertEqual(high['original_name'], "MyHigh")
+        self.assertEqual(low['original_name'], "MyLow")
+
+    def test_no_mesh_selected_cancels(self):
+        select_only([make_mesh("A", (0, 0, 0))])
+        self.assertEqual(bpy.ops.object.pair_rename(), {'CANCELLED'})
+
 
 class TestEOperatorUnpair(unittest.TestCase):
     """撤销配对操作符"""
@@ -272,7 +303,6 @@ class TestEOperatorUnpair(unittest.TestCase):
         self.assertEqual(low.name, "MyLow")
         self.assertNotIn('original_name', high)
         self.assertNotIn('pairing_prefix', low)
-
 
     def test_unpair_with_self_held_original_name(self):
         # 回归测试:物体自身占用了原名称时不应被误判为冲突
