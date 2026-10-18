@@ -98,8 +98,10 @@ jobs:
 
       - name: 部署内核为插件包内的 _core.so
         run: |
+          # 仓库根目录即插件包(检出目录名=仓库名),_core.so 放包内根下,
+          # 供 core/matching.py 的 `from .. import _core` 导入
           ls -l target/release/ | grep -i core || true   # 诊断输出:确认产物文件名
-          cp target/release/lib_core.so Blender_AutoMatch/_core.so
+          cp target/release/lib_core.so ./_core.so
 
       - name: 设置 Python(ruff 需要)
         uses: actions/setup-python@v7
