@@ -315,13 +315,20 @@ pairs = [
 
 分支流向:`feature/xxx` → `dev`(日常集成)→ `main`(发布版本)
 
-提交 PR 前请本地自检:
+提交 PR 前请本地自检(以下命令与 CI 门禁一致,见 `.github/workflows/ci.yml`):
 
 ```bash
+cargo fmt --all --check                       # 格式检查
+cargo clippy --all-targets -- -D warnings     # lint 检查
 cargo test                                    # Rust 内核单元测试
+ruff check --ignore E402,F401,F541 .          # Python 静态检查
 blender --background --factory-startup \
   --python tests/run_tests.py                 # 26 个无头测试用例
 ```
+
+仓库配置了 GitHub Actions CI,PR 会自动运行上述检查。⚠ CI 只能证明代码在
+Blender 3.4.1 无头模式下逻辑正确,**无法验证插件在 Blender GUI 中的实际运行**,
+合并前请仍在 Blender 中手动验证一遍。
 
 ## 开发信息
 

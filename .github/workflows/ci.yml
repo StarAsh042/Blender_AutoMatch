@@ -1,0 +1,124 @@
+name: CI
+
+# 触发条件(按《项目迭代_Blender插件》第八节):
+#   · PR 到 dev / main
+#   · 推送版本标签 v*
+#   · 手动触发(便于维护者按需复验)
+# 迭代分支的普通 push 不触发,避免无谓消耗。
+on:
+  pull_request:
+    branches: [main, dev]
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+# 最小权限:CI 全程只读仓库,不使用任何密钥
+permissions:
+  contents: read
+
+# 同一分支有新提交时取消进行中的旧运行,节省分钟数
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Rust 内核门禁 + 打包验证 + 依赖漏洞扫描
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # 固定为本地已验证的工具链 1.99.0,避免 clippy 版本漂移造成误报
+      - uses: dtolnay/rust-toolchain@1.99.0
+        with:
+          components: rustfmt, clippy
+
+      - name: cargo fmt --check
+        run: cargo fmt --all --check
+
+      - name: cargo clippy(-D warnings)
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: cargo test
+        run: cargo test --locked
+
+      - name: cargo build --release
+        run: cargo build --release --locked
+
+      - name: 依赖漏洞扫描(cargo audit)
+        run: |
+          cargo install cargo-audit --locked
+          cargo audit
+
+      - name: 设置 Python(maturin 打包需要)
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: maturin 打包 wheel(README「方式二」)
+        run: |
+          pip install maturin==1.15.0
+          maturin build --release
+
+      - name: 上传 wheel 产物
+        uses: actions/upload-artifact@v7
+        with:
+          name: blender-automatch-core-wheel
+          path: target/wheels/*.whl
+          if-no-files-found: error
+
+  # 插件门禁:在 Blender 3.4.1 无头进程中跑 26 个用例
+  # ⚠ CI 只能证明代码逻辑在 Blender 3.4.1 无头模式下正确,
+  #   无法验证插件在 Blender GUI 中的实际运行(见 README「参与开发」)。
+  blender-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@1.99.0
+
+      - name: 安装 Blender 无头运行所需的系统库
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libx11-6 libxi6 libxinerama1 libxrandr2 libxxf86vm1 \
+            libxfixes3 libxrender1 libxext6 libxkbcommon0 \
+            libsm6 libice6 libgl1 libglu1-mesa libgomp1
+
+      - name: 下载 Blender 3.4.1(Linux x64)并按官方 SHA256 校验
+        run: |
+          # 解压到 RUNNER_TEMP(仓库外),避免 Blender 自带脚本被后续 ruff 扫描
+          mkdir -p "$RUNNER_TEMP/blender-dist"
+          cd "$RUNNER_TEMP/blender-dist"
+          curl -fsSL -O https://download.blender.org/release/Blender3.4/blender-3.4.1-linux-x64.tar.xz
+          curl -fsSL -o blender-3.4.1.sha256 \
+            https://download.blender.org/release/Blender3.4/blender-3.4.1.sha256
+          grep 'blender-3.4.1-linux-x64.tar.xz' blender-3.4.1.sha256 | sha256sum -c -
+          tar -xf blender-3.4.1-linux-x64.tar.xz
+          echo "BLENDER_BIN=$RUNNER_TEMP/blender-dist/blender-3.4.1-linux-x64/blender" \
+            >> "$GITHUB_ENV"
+
+      - name: 构建 Rust 内核(Linux 产物为 lib_core.so)
+        run: cargo build --release --locked
+
+      - name: 部署内核为插件包内的 _core.so
+        run: |
+          # 仓库根目录即插件包(检出目录名=仓库名),_core.so 放包内根下,
+          # 供 core/matching.py 的 `from .. import _core` 导入
+          ls -l target/release/ | grep -i core || true   # 诊断输出:确认产物文件名
+          cp target/release/lib_core.so ./_core.so
+
+      - name: 设置 Python(ruff 需要)
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - name: ruff 静态检查(与本地定稿规则一致)
+        run: |
+          pip install ruff==0.9.4
+          ruff check --ignore E402,F401,F541 .
+
+      - name: Blender 3.4.1 无头测试(26 个用例)
+        run: |
+          "$BLENDER_BIN" --background --factory-startup \
+            --python tests/run_tests.py

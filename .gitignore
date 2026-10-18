@@ -23,6 +23,7 @@ target/
 dist/
 build/
 
-# 内核编译产物(.pyd 为发布形态,.dll 为中间产物)
+# 内核编译产物(.pyd 为发布形态,.dll 为中间产物,*.so 为 Linux/macOS 构建产物)
 *.pyd
 *.dll
+*.so
