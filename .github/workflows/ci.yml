@@ -87,11 +87,16 @@ jobs:
 
       - name: 下载 Blender 3.4.1(Linux x64)并按官方 SHA256 校验
         run: |
+          # 解压到 RUNNER_TEMP(仓库外),避免 Blender 自带脚本被后续 ruff 扫描
+          mkdir -p "$RUNNER_TEMP/blender-dist"
+          cd "$RUNNER_TEMP/blender-dist"
           curl -fsSL -O https://download.blender.org/release/Blender3.4/blender-3.4.1-linux-x64.tar.xz
           curl -fsSL -o blender-3.4.1.sha256 \
             https://download.blender.org/release/Blender3.4/blender-3.4.1.sha256
           grep 'blender-3.4.1-linux-x64.tar.xz' blender-3.4.1.sha256 | sha256sum -c -
           tar -xf blender-3.4.1-linux-x64.tar.xz
+          echo "BLENDER_BIN=$RUNNER_TEMP/blender-dist/blender-3.4.1-linux-x64/blender" \
+            >> "$GITHUB_ENV"
 
       - name: 构建 Rust 内核(Linux 产物为 lib_core.so)
         run: cargo build --release --locked
@@ -115,6 +120,5 @@ jobs:
 
       - name: Blender 3.4.1 无头测试(26 个用例)
         run: |
-          ./blender-3.4.1-linux-x64/blender \
-            --background --factory-startup \
+          "$BLENDER_BIN" --background --factory-startup \
             --python tests/run_tests.py
