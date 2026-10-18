@@ -299,6 +299,30 @@ pairs = [
 ### v0.1.0
 - ✨ 插件入口与主面板骨架
 
+## 参与开发
+
+> **给外部贡献者的重要说明**
+>
+> `main` 分支受保护,且仅维护者可直接推送。
+> **请向 `dev` 分支提交 Pull Request;直接向 `main` 提交的 PR 大概率不会受理。**
+
+推荐流程:
+
+1. Fork 本仓库到你自己账号
+2. 从 `dev` 分支切出特性分支(`git checkout -b feature/xxx`)
+3. 提交改动并推送到你的 Fork
+4. 向本仓库的 **`dev` 分支**开 Pull Request,等待维护者评审与合并
+
+分支流向:`feature/xxx` → `dev`(日常集成)→ `main`(发布版本)
+
+提交 PR 前请本地自检:
+
+```bash
+cargo test                                    # Rust 内核单元测试
+blender --background --factory-startup \
+  --python tests/run_tests.py                 # 26 个无头测试用例
+```
+
 ## 开发信息
 
 ### 项目结构
